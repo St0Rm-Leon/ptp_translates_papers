@@ -42,6 +42,17 @@ def test_resolve_mineru_cli_from_interpreter_directory(tmp_path: Path):
     assert _resolve_mineru_cli(python) == cli
 
 
+def test_resolve_mineru_cli_from_standalone_runtime_scripts(tmp_path: Path):
+    python = tmp_path / ("python.exe" if WINDOWS else "python")
+    python.write_text("", encoding="utf-8")
+    scripts = tmp_path / ("Scripts" if WINDOWS else "bin")
+    scripts.mkdir()
+    cli = scripts / ("mineru-kit.exe" if WINDOWS else "mineru-kit")
+    cli.write_text("", encoding="utf-8")
+
+    assert _resolve_mineru_cli(python) == cli
+
+
 def test_mineru_command_uses_zip_and_image_analysis_flag(tmp_path: Path):
     cli = tmp_path / "mineru-kit"
     command = _mineru_command(

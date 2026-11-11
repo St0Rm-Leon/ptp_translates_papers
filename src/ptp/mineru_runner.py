@@ -94,10 +94,15 @@ def _resolve_mineru_python(path: Path | None) -> Path:
 
 
 def _resolve_mineru_cli(python: Path) -> Path | None:
-    """Locate the MinerU CLI next to the configured interpreter."""
-    candidate = python.parent / ("mineru-kit.exe" if WINDOWS else "mineru-kit")
-    if candidate.exists():
-        return candidate
+    """Locate the MinerU CLI for venv and standalone Python layouts."""
+    name = "mineru-kit.exe" if WINDOWS else "mineru-kit"
+    script_dir = "Scripts" if WINDOWS else "bin"
+    for candidate in (
+        python.parent / name,
+        python.parent / script_dir / name,
+    ):
+        if candidate.exists():
+            return candidate
     fallback = resolve_tool("mineru-kit")
     return Path(fallback) if fallback else None
 
