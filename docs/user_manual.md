@@ -10,7 +10,7 @@
 
 ## 0. 这篇文章是干什么的?
 
-本文主要说明 **`config.yaml` 如何设置**，并给出安装、运行和常见问题。开发者细节见 [dev.md](dev.md)，完整项目说明见 [README.md](../README.md)。
+本文主要说明 **`config.yaml` 如何设置**，并给出安装、运行和常见问题。功能与快速开始见 [README.md](../README.md)，开发者细节见 [dev.md](dev.md)。
 
 ## 1. 它能做什么
 
@@ -37,12 +37,55 @@ outputs/
       nci195_zh.md
       nci195_content_list.json
       state.json
-    nci195_zh.pdf
+    nci195_zh.pdf          # 单栏
+    nci195_bilingual.pdf   # --layout bilingual
 ```
 
 - `fig_comments.txt` 是论文原有图注的中英双语索引，不是模型生成的新描述。
 - Markdown pipe table 和 HTML table 会翻译；MinerU `flash` 把表格放在 code fence 里时不翻译，表格请用 `standard`。
 - 输出 PDF 是重新排版的，不保证与原 PDF 版式一致。
+
+### 1.1 项目范围与非目标
+
+- 主要输入是带文本层的英文论文 PDF，典型场景 4–6 页；扫描件、复杂表格和公式密集论文也可以处理，但更慢。
+- 翻译模型固定为 Hy-MT2-1.8B-GGUF **Q4_K_M**；v1 不引入 7B。
+- 单栏输出中文 PDF；双语模式输出“左原文 / 右译文”的双栏 PDF。
+- CPU 和 GPU 都支持；GPU 和文档级并行都是可选增强。
+- 10 分钟是**软目标**，不是硬性 SLA。
+
+**v1 非目标**：扫描件也必须 10 分钟内完成、复刻原 PDF 版式、生成图像内容描述、7B 模型、默认启用 `advanced` 档。
+
+### 1.2 时间与硬件
+
+时间预算（带文本层 4–6 页）：
+
+| 阶段 | 普通论文 | 扫描件/复杂版式 |
+|---|---:|---:|
+| MinerU `basic`/`standard` | 0.5–2.5 分钟 | 3–6 分钟 |
+| Hy-MT2 1.8B Q4 翻译 | 1.5–4 分钟 | 3–6 分钟 |
+| Pandoc + PDF engine | 5–30 秒 | 5–30 秒 |
+| **合计** | **约 3–7 分钟** | **约 8–15+ 分钟** |
+
+硬件建议：
+
+| 项目 | 最低 | 推荐 | 说明 |
+|---|---|---|---|
+| CPU | 6C/12T，AVX2 | 8C/16T Zen3 / Alder Lake 或更新 | CPU 自动档位会参考逻辑核数 |
+| 内存 | 16 GB | 32 GB | MinerU、模型、Pandoc 和系统同时占用 |
+| GPU | 不需要 | 8 GB+ VRAM | GPU 是加速项，不是必需 |
+| 磁盘 | 10 GB 空闲 | 20 GB+ SSD | 环境、MinerU 模型、GGUF 和 TeX 输出 |
+| OS | Linux x86_64 / Windows | Arch Linux / Windows 11 | GPU 后端支持因平台而异 |
+| Python | 3.11–3.14 | 3.13.x | 由 `uv` 管理 |
+| 网络 | 首次下载 | 宽带 | 首次安装环境/模型约 4 GB，10–30+ 分钟 |
+
+### 1.3 工作流
+
+1. 把英文论文 PDF 放到 `inputs/`，或通过 `-i` 指定。
+2. MinerU 解析为 Markdown、图片和结构化 JSON，中间文件写入 `temp/`。
+3. 从结构化 JSON 提取图注，生成双语 `fig_comments.txt`。
+4. 对 Markdown 按块使用 Hy-MT2 翻译成中文。
+5. 表格按 Markdown/HTML 路径翻译并转换。
+6. Pandoc + XeLaTeX 生成单栏或双语 PDF，输出到 `outputs/<stem>_zh/`；`state.json` 支持续跑。
 
 ## 2. 安装与首次运行
 
@@ -51,7 +94,7 @@ outputs/
 ```bash
 sudo pacman -S --needed pandoc-cli llama-cpp
 sudo pacman -S --needed texlive-xetex texlive-latexrecommended \
-  texlive-fontsrecommended texlive-langchinese
+  texlive-fontsrecommended texlive-langchinese texlive-latexextra
 
 # 可选：Vulkan GPU 路径（AMD iGPU 或 NVIDIA NVK）
 sudo pacman -S --needed vulkan-radeon vulkan-tools ggml-vulkan
@@ -68,11 +111,18 @@ Python 环境和模型：
 
 ```bash
 cd /home/storm/src/ptp
+
+# 方式 A：开发环境，MinerU 与 PTP 共用 venv
+uv sync --extra mineru
+
+# 方式 B：推荐发行方式，MinerU 独立 venv
 uv sync
+uv run ptp-install-mineru --accept-license
+
 uv run ptp --download-model
 ```
 
-`--download-model` 会把 `Hy-MT2-1.8B-Q4_K_M.gguf`（约 1.1 GB）下载到 `models/`。MinerU 首次运行还会下载自己的 OCR/VLM/表格模型，缓存在 `~/.mineru/models/`。
+方式 B 会把 MinerU 安装到独立目录，并打印 `mineru.python` 配置。MinerU 仍按其自身许可证分发，不进入 PTP 的 GPL 代码范围。`--download-model` 会把 `Hy-MT2-1.8B-Q4_K_M.gguf`（约 1.1 GB）下载到 `models/`。MinerU 首次运行还会下载自己的 OCR/VLM/表格模型，缓存在 `~/.mineru/models/`。
 
 快速运行：
 
@@ -144,6 +194,12 @@ mineru:
   auto_basic_text_coverage: 0.8
   # 是否让 MinerU VLM 额外分析图片内容；默认关闭，开启会更慢
   image_analysis: false
+  # 独立 MinerU venv 的 Python；null = 使用 PTP 的 Python
+  python: null
+  # auto | huggingface | modelscope | local
+  model_source: auto
+  # MinerU 模型根目录；null = ~/.mineru/models
+  model_dir: null
 
 translation:
   # 本地 GGUF 路径；相对 config.yaml
@@ -215,6 +271,7 @@ render:
 - `1`：推荐值，16 GB 内存或 4 GB 显存都建议保持 1。
 - CPU 且内存充足时可尝试 2；每个文档会各自启动一个 llama-server。
 - GPU 模式下程序会自动把并行降为 1，避免显存争用。
+- `--parallel` 仍是实验性能力：MinerU 阶段会串行加锁，翻译请求由各自的 llama-server 处理。
 
 ## 6. `mineru` 配置
 
@@ -223,6 +280,9 @@ render:
 | `tier` | `auto` | `auto` / `flash` / `basic` / `standard` / `advanced` |
 | `auto_basic_text_coverage` | `0.8` | CPU 自动降级 `basic` 的文本覆盖阈值 |
 | `image_analysis` | `false` | 是否启用 MinerU VLM 图片分析；会增加耗时 |
+| `python` | `null` | 独立 MinerU venv 的 Python；`null` 使用 PTP 的 Python |
+| `model_source` | `auto` | `auto` / `huggingface` / `modelscope` / `local` |
+| `model_dir` | `null` | MinerU 模型根目录；`null` 使用 `~/.mineru/models` |
 
 ### tier 怎么选
 
@@ -238,6 +298,8 @@ render:
 - 其他：`standard`。
 
 该规则不判断表格复杂度；表格多时请显式 `--tier standard`。
+
+`standard` 的 VLM 可能把多 panel 图拆成多个图片，影响图注对齐；需要对比 `basic` 和 `standard`，必要时对结构化 JSON 做后处理或改用 `basic` 提取图注。
 
 ## 7. `translation` 配置
 
@@ -278,6 +340,20 @@ translation:
 - 想更贴近模型卡，可试 `0.7`；但可能更自由、术语更不稳定。
 - `chunk_tokens` 不建议超过 1000；1.8B 模型长上下文容易漏翻/直出原文。
 - `max_tokens` 应小于 `context_size - chunk_tokens` 的余量；默认 800 + 2048 在 4096 上下文内基本安全。
+
+### 占位符与回退
+
+- Markdown 结构、LaTeX 公式、引用、图片链接会替换成 ASCII 占位符（如 `@@P0@@`）。
+- 模型丢失占位符时先重试一次；仍失败则按受保护片段切分，只翻译普通文本，公式/引用/图片原样拼回。
+- 最终仍失败才保留原文并记录 warning；`temp/state.json` 的 `translation_fallbacks` 会记录次数。
+- 图注、表注、表格内容和参考文献在双语模式下本来就保留原文，不属于回退失败。
+
+### 表格翻译
+
+- Markdown pipe table 和 HTML table 按单元格翻译。
+- MinerU `flash` 把表格放进 fenced code block 时不翻译；需要表格翻译时用 `--tier standard`。
+- 双语模式保留 HTML 表格的 `rowspan`/`colspan`；单栏模式会展开成近似网格。
+- 表注和单元格内的公式/单位会尽量保留原样。
 
 ### 术语表
 
@@ -333,10 +409,14 @@ uv run ptp -i inputs/nci195.pdf -o outputs --layout bilingual
 - 图片、表格跨双栏且只出现一次；图注、表注保留原文。
 - 表格保留原文；HTML 表格会保留合并单元格。
 - 参考文献保留原文并全宽显示。
+- 页脚注不进入正文，统一放到文末 `Notes / 注释` 小节。
+- 被图片/表格隔开的续段会自动合并后再翻译。
+- `<sup>`/`<sub>` 会正确渲染成上标/下标。
 - 输出 `outputs/<stem>_zh/<stem>_bilingual.pdf`，不覆盖单栏 PDF。
 - 需要安装 `texlive-latexextra`（提供 `paracol`），且当前只支持 `engine: xelatex`。
 - `fig_comments.txt` 仍生成，但双语模式 `ZH` 为 `[未翻译]`。
-- 左右栏不逐句对齐；长度差异会产生留白。
+- 左右栏不逐句对齐；长度差异会产生留白。长段落跨页时左右栏可能因中英文长度不同而漂移。
+- 页脚注统一放到文末，不放在原页底部；对齐是段落级，句级对齐属于后续工作。
 
 ## 9. 常用配置方案
 
@@ -411,12 +491,17 @@ uv run ptp --download-model
 |---|---|
 | `-i, --input` | 输入 PDF 或目录 |
 | `-o, --output` | 输出根目录，不是 PDF 路径 |
+| `--config` | 指定 config.yaml |
 | `--tier` | 覆盖 MinerU 档位 |
+| `--mineru-python` | 独立 MinerU venv 的 Python |
+| `--mineru-model-source` | `auto`/`huggingface`/`modelscope`/`local` |
+| `--mineru-model-dir` | MinerU 模型根目录 |
 | `--device` | `auto`/`cpu`/`gpu` |
 | `--cpu-only` / `--gpu-only` | 设备别名 |
 | `--gpu-backend` | `auto`/`cuda`/`vulkan`/`metal` |
 | `--gpu-index` | GPU 编号 |
 | `--threads` | CPU 线程数 |
+| `--task16` | 等价于 `--threads 16`；不是 16 个并行任务 |
 | `--parallel` | 文档级并行 |
 | `--no-temp` / `--keep-temp` | 是否保留中间文件 |
 | `--resume` | 复用已完成阶段 |
@@ -425,6 +510,7 @@ uv run ptp --download-model
 | `--layout` | `single` 或 `bilingual` |
 | `--engine` | PDF 引擎 |
 | `--dry-run` | 只打印配置和任务 |
+| `--log-level` | 日志级别 |
 | `--download-model` | 下载 Q4_K_M |
 
 ## 11. 输出与清理
@@ -436,6 +522,16 @@ uv run ptp --download-model
 - `--resume` 依赖 `state.json`；如果改了 tier/device，建议换输出目录或删除旧 `temp/`。
 - `fig_comments.txt` 位于 `temp/image/`，包含 `EN:` 和 `ZH:` 两行。
 - 图片按 `fig1.jpg`、`fig2.jpg` 重命名；公式/表格图片保留 MinerU 原名。
+
+`fig_comments.txt` 格式：
+
+```text
+fig1.jpg
+EN: Figure 1. Overview of the experimental setup.
+ZH: 图 1. 实验装置概览。
+```
+
+缺图注时写 `EN: [no caption]` / `ZH: [无图注]`。多 panel 图按 MinerU 输出的图片文件逐项记录；同一图注覆盖多个 panel 时允许重复。双语模式下 `ZH` 为 `[未翻译]`。
 
 ## 12. 常见问题
 
@@ -499,8 +595,30 @@ sudo pacman -S --needed texlive-latexextra
 
 双语模式当前也只支持 `render.engine: xelatex`；不要改成 `tectonic`/`typst`。
 
-## 13. 相关文档
+## 13. 设计约束与已知限制
 
-- 产品范围与设计决策：[README.md](../README.md)
+- 10 分钟是软目标，不是 SLA；复杂论文允许更久。
+- v1 输出重排 PDF，不保留原 PDF 版式；双语对齐是段落级，不是逐句对齐。
+- 翻译模型固定 Q4_K_M；1.25-bit/2-bit 版本需要特殊 STK kernel，质量也不稳，不建议使用。
+- `flash` 的 fenced code block 表格不翻译；需要表格翻译时用 `standard`。
+- `standard` 的 VLM 可能拆分多 panel 图，图注映射需要实测；必要时用 `basic` 对比。
+- GPU 模式下 `parallel` 自动限制为 1；CUDA 后端尚未在开发机验证。
+- 双语模式保留 HTML 表格的 `rowspan`/`colspan`；单栏模式会展开成近似网格。
+- 长段落跨页时左右栏可能漂移；彻底同步需要句级对齐。
+- 复杂内联标记/公式块丢失占位符时会先分段重译，仍失败才保留原文并记录 warning。
+- Windows 双击打包尚未实现；当前 `ptp.exe` 是未来产物名。
+
+## 14. 相关文档
+
+- 功能与快速开始：[README.md](../README.md)
 - 开发者细节、模块和调试：[dev.md](dev.md)
 - 示例配置：[config.example.yaml](../config.example.yaml)
+- MinerU：https://github.com/opendatalab/MinerU
+- Hy-MT2-1.8B-GGUF：https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF
+- Pandoc：https://github.com/jgm/pandoc
+
+## 15. 许可证
+
+PTP 自身使用 **GPL-2.0-or-later**；完整文本见 [LICENSE](../LICENSE)。
+
+MinerU 是可选组件，使用 **MinerU Open Source License**（Apache-2.0 + 附加条款），不并入 PTP 的 GPL 代码。第三方组件和模型的许可证说明见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) 与 `LICENSES/`。

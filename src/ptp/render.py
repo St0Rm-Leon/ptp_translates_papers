@@ -8,12 +8,24 @@ import subprocess
 from pathlib import Path
 
 from .config import RenderConfig
+from .markdown_tables import inline_html_to_latex_markdown
 
 logger = logging.getLogger(__name__)
 
 
 class RenderError(RuntimeError):
     """Pandoc or the PDF engine failed."""
+
+
+def _normalized_markdown(markdown_path: Path, resource_dir: Path) -> Path:
+    text = markdown_path.read_text(encoding="utf-8")
+    normalized = inline_html_to_latex_markdown(text)
+    if normalized == text:
+        return markdown_path
+    target = resource_dir / f"_{markdown_path.stem}_render.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(normalized, encoding="utf-8")
+    return target
 
 
 def render_pdf(
@@ -31,7 +43,7 @@ def render_pdf(
 
     cmd = [
         pandoc,
-        str(markdown_path),
+        str(_normalized_markdown(markdown_path, resource_dir)),
         "--from",
         "markdown+tex_math_dollars+raw_html+pipe_tables",
         "--to",

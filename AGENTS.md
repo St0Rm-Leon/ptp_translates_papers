@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`README.md` is the authoritative v1 spec. The implementation lives in `src/ptp/`, tests in `tests/`, and the sample configuration in `config.example.yaml`. Detailed docs: `docs/dev.md` (architecture/debugging) and `docs/user_manual.md` (configuration-focused).
+`docs/user_manual.md` is the authoritative user/configuration spec; `README.md` is the feature overview and quick start. The implementation lives in `src/ptp/`, tests in `tests/`, and the sample configuration in `config.example.yaml`. Developer docs: `docs/dev.md` (architecture/debugging).
 
 ## Status and scope
 
@@ -10,6 +10,7 @@
   - `standard`: ~63–65 s (MinerU ~16 s, translation ~46 s, Pandoc ~2 s); HTML table translated and rendered.
 - Bilingual two-column layout is implemented (`--layout bilingual`) and was exercised on all four PDFs in `inputs/` (4, 6, 9 and 11 pages).
 - Placeholder failures now retry and then fall back to segment-wise translation; `state.json` records `translation_fallbacks`. In the four-PDF acceptance run, all body pairs in `s41598` and `nci195` had Chinese, and only metadata (ORCID/DOI) remained English.
+- Bilingual layout now moves `page_footnote` blocks to an end-of-document `Notes / 注释` section, merges figure-interrupted continuation paragraphs, and converts `<sup>`/`<sub>` to LaTeX superscript/subscript commands. Long paragraphs spanning pages can still drift between columns; sentence-level alignment is future work.
 - MinerU runs in a child process (`ptp/mineru_worker.py`) so its VLM leaves VRAM before llama-server starts; without this, standard translation falls to ~5 tok/s.
 - `llama-bench` on Vulkan1: pp128 ≈ 1021 t/s, tg64 ≈ 78.7 t/s (asserts-enabled Arch build).
 - v1 excludes original-layout fidelity, 7B, generated image descriptions, and default `advanced` tier.
@@ -18,34 +19,39 @@
 ## Commands
 
 ```bash
-uv sync
+uv sync --extra mineru
 uv run ptp --help
 uv run ptp --dry-run -i inputs/nci195.pdf --device cpu
 uv run ptp --download-model
 uv run ptp -i inputs/nci195.pdf -o outputs
 uv run ptp -i inputs/nci195.pdf -o outputs --layout bilingual
+uv run ptp-install-mineru --accept-license
 uv run pytest -q
 uv run ruff check src tests
 ```
 
 Use `uv` for everything. The environment is Python 3.13.18; `pip` is not installed.
 
+The `mineru` package is an optional extra. For development use `uv sync --extra mineru`; for a license-separated install use `ptp-install-mineru` and point `mineru.python` at that venv.
+
 ## Architecture
 
 - `cli.py` / `config.py`: argparse CLI, YAML defaults, CLI > config > built-ins.
 - `pipeline.py`: per-document stages, state.json, resume, optional document-level threads.
-- `mineru_runner.py`: text-layer coverage, `tier: auto`, MinerU parse/save.
+- `mineru_runner.py`: text-layer coverage, `tier: auto`, MinerU child-process orchestration.
+- `install_mineru.py`: create an isolated MinerU venv outside PTP's environment.
 - `translate.py`: chunking, placeholder protection, llama-server lifecycle, GGUF download.
 - `figures.py`: copy/rename figures (`fig1.jpg`…), extract captions, write bilingual `fig_comments.txt`.
 - `render.py`: single-column Pandoc + XeLaTeX and `CJKmainfont`.
 - `bilingual.py`: block pairing, paracol LaTeX generation, full-width figures/tables, direct XeLaTeX compile.
 - `markdown_tables.py`: HTML table → Markdown pipe table; math entity normalization.
 - `devices.py`: `llama-cli --list-devices`, GPU policy, MinerU environment.
-- `mineru_worker.py`: isolated MinerU process to release GPU memory before translation.
+- `mineru_worker.py`: standalone MinerU process (stdlib + MinerU only) to release GPU memory and allow a separate venv.
 
 ## Non-obvious rules
 
 - `-o` is an output root directory, not a PDF path. Single PDF: `outputs/<stem>_zh/<stem>_zh.pdf`; bilingual PDF: `outputs/<stem>_zh/<stem>_bilingual.pdf`.
+- MinerU is an optional dependency (`--extra mineru`) and can run from an isolated venv configured via `mineru.python`. It remains a separate program under the MinerU Open Source License; do not import it into PTP's main process.
 - `render.layout: single|bilingual`; bilingual currently requires `render.engine: xelatex` and `paracol` from `texlive-latexextra`.
 - In bilingual layout, title is bilingual; body text is paired per paragraph; figures/tables span both columns once; figure/table captions and references stay original; `fig_comments.txt` uses `ZH: [未翻译]`.
 - `--task16` means `--threads 16`; it is not 16 parallel tasks. Use `--parallel N` for document concurrency.

@@ -138,6 +138,21 @@ def _select_index(devices: list[DeviceInfo], index: int | None) -> DeviceInfo:
 @contextmanager
 def mineru_environment(config: Config, selection: DeviceSelection) -> Iterator[None]:
     """Set MinerU device/thread environment for one parse and restore it afterwards."""
+    updates = mineru_env_vars(config, selection)
+    previous = {key: os.environ.get(key) for key in updates}
+    try:
+        os.environ.update(updates)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def mineru_env_vars(config: Config, selection: DeviceSelection) -> dict[str, str]:
+    """Environment variables for an isolated MinerU worker process."""
     updates: dict[str, str] = {}
 
     if selection.mode == "cpu":
@@ -167,13 +182,7 @@ def mineru_environment(config: Config, selection: DeviceSelection) -> Iterator[N
         updates["MINERU_DEVICE_MODE"] = "gpu"
         updates["MINERU_MODEL_ONNX_DEVICE"] = "gpu"
 
-    previous = {key: os.environ.get(key) for key in updates}
-    try:
-        os.environ.update(updates)
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    updates["MINERU_MODEL_SOURCE"] = config.mineru.model_source
+    if config.mineru.model_dir is not None:
+        updates["MINERU_MODEL_BASE_DIR"] = str(config.mineru.model_dir)
+    return updates

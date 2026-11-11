@@ -11,12 +11,21 @@ from pathlib import Path
 from typing import Literal
 
 from .config import RenderConfig
+from .markdown_tables import inline_html_to_latex_markdown
 from .translate import TranslationService, split_markdown_blocks
 
 logger = logging.getLogger(__name__)
 
 _BLOCK_KIND = Literal[
-    "title", "metadata", "text", "figure", "table", "equation", "code", "reference"
+    "title",
+    "metadata",
+    "text",
+    "figure",
+    "table",
+    "equation",
+    "code",
+    "reference",
+    "footnote",
 ]
 
 _IMAGE_ONLY = re.compile(r"^\s*!\[[^\]]*\]\(([^)]+)\)\s*$")
@@ -33,6 +42,17 @@ _METADATA_HINTS = re.compile(
     r"e-?mail|received|accepted|published|keywords)",
     re.IGNORECASE,
 )
+_TERMINAL_PUNCTUATION = re.compile(r"[.!?。！？:：;；][\"'”’)\]]*\s*$")
+_LOWERCASE_START = re.compile(r"^[a-z]")
+_LIST_ITEM_START = re.compile(r"^\s*(?:[•·]|[-*]\s|\d+[.)]\s|[A-Z][.)]\s)")
+
+
+def _is_page_footnote(block: str) -> bool:
+    lowered = block.lower()
+    return (
+        'data-block-type="page_footnote"' in lowered
+        or "docvortex-page-footnote" in lowered
+    )
 
 
 def _looks_like_metadata(block: str) -> bool:
@@ -108,6 +128,11 @@ def build_units(markdown: str, translator: TranslationService) -> list[Bilingual
     while index < len(blocks):
         block = blocks[index]
         if not block.strip():
+            index += 1
+            continue
+
+        if _is_page_footnote(block) and seen_title:
+            units.append(BilingualUnit("footnote", block, full_width=True))
             index += 1
             continue
 
@@ -205,7 +230,58 @@ def build_units(markdown: str, translator: TranslationService) -> list[Bilingual
         units.append(BilingualUnit("text", block, translated=translated))
         index += 1
 
-    return units
+    return _merge_continuation_units(units, translator)
+
+
+def _merge_continuation_units(
+    units: list[BilingualUnit], translator: TranslationService
+) -> list[BilingualUnit]:
+    """Join paragraphs that MinerU split at a page/column or figure boundary.
+
+    When a text unit ends mid-sentence and the next text unit (possibly after
+    a figure/table) starts lowercase, translate them as one paragraph.  The
+    merged paragraph is placed after the intervening figure/table, matching
+    the original reading order.
+    """
+    merged: list[BilingualUnit] = []
+    index = 0
+    while index < len(units):
+        unit = units[index]
+        if (
+            unit.kind != "text"
+            or _TERMINAL_PUNCTUATION.search(unit.source.strip())
+            or _LIST_ITEM_START.match(unit.source)
+        ):
+            merged.append(unit)
+            index += 1
+            continue
+
+        look = index + 1
+        while look < len(units) and units[look].kind in {"figure", "table"}:
+            look += 1
+        if (
+            look < len(units)
+            and units[look].kind == "text"
+            and _LOWERCASE_START.match(units[look].source.lstrip())
+        ):
+            previous = unit.source.rstrip()
+            following = units[look].source.lstrip()
+            separator = "" if previous.endswith("-") else " "
+            combined_source = previous + separator + following
+            logger.debug(
+                "merged continuation paragraph: %s", combined_source[:80].replace("\n", " ")
+            )
+            translated = translator.translate_block(combined_source)
+            merged.extend(units[index + 1 : look])
+            merged.append(
+                BilingualUnit("text", combined_source, translated=translated)
+            )
+            index = look + 1
+            continue
+
+        merged.append(unit)
+        index += 1
+    return merged
 
 
 def _normalize_table(block: str) -> str:
@@ -217,6 +293,7 @@ def _normalize_table(block: str) -> str:
 def _markdown_to_latex(block: str) -> str:
     # Noto Serif CJK SC lacks U+2217; use an ASCII asterisk in titles/metadata.
     block = block.replace("\u2217", "*").replace("\u2009", " ")
+    block = inline_html_to_latex_markdown(block)
     pandoc = shutil.which("pandoc")
     if pandoc is None:
         raise RuntimeError("pandoc is required for bilingual layout")
@@ -335,9 +412,21 @@ class _TexBuilder:
         return "\n".join(self.lines).rstrip() + "\n"
 
 
+def _notes_latex(units: list[BilingualUnit]) -> str:
+    lines = [r"\section*{Notes / 注释}", r"{\small"]
+    for unit in units:
+        lines.append(_markdown_to_latex(unit.source))
+        lines.append("")
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def build_bilingual_tex(units: list[BilingualUnit], config: RenderConfig) -> str:
     builder = _TexBuilder(config)
+    footnotes = [unit for unit in units if unit.kind == "footnote"]
     for unit in units:
+        if unit.kind == "footnote":
+            continue
         if unit.kind == "title":
             builder.add_full_width(_title_latex(unit.source, unit.translated))
         elif unit.kind in {"metadata", "reference", "equation", "code"}:
@@ -351,6 +440,8 @@ def build_bilingual_tex(units: list[BilingualUnit], config: RenderConfig) -> str
                 _markdown_to_latex(unit.source),
                 _markdown_to_latex(unit.translated or unit.source),
             )
+    if footnotes:
+        builder.add_full_width(_notes_latex(footnotes))
     return builder.result()
 
 

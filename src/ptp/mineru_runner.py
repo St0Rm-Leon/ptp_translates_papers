@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
+import os
 import subprocess
 import sys
 import time
@@ -14,7 +14,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 
 from .config import Config
-from .devices import DeviceSelection, mineru_environment
+from .devices import DeviceSelection, mineru_env_vars, mineru_environment
 
 logger = logging.getLogger(__name__)
 
@@ -79,33 +79,23 @@ def parse_pdf(
     selection: DeviceSelection,
     tier: str,
 ) -> MineruArtifacts:
-    """Run MinerU and persist Markdown, structured content, and images."""
-    from mineru import parse
-    from mineru.parser.writer import FileBasedDataWriter
-
-    mineru_dir = work_dir / "mineru"
-    if mineru_dir.exists():
-        shutil.rmtree(mineru_dir)
-    mineru_dir.mkdir(parents=True, exist_ok=True)
+    """Run MinerU in-process (development/fallback path)."""
+    from .mineru_worker import run_parse
 
     logger.info("MinerU tier=%s device=%s", tier, selection.mode)
     started = time.perf_counter()
     with mineru_environment(config, selection):
-        result = parse(
-            str(pdf_path),
-            tier=tier,  # type: ignore[arg-type]
+        mineru_dir = run_parse(
+            pdf_path,
+            work_dir,
+            tier,
             image_analysis=config.mineru.image_analysis,
         )
-        result.save(FileBasedDataWriter(str(mineru_dir)))
     logger.info("MinerU finished in %.1fs", time.perf_counter() - started)
 
     markdown_path = mineru_dir / "markdown.md"
     structured_path = mineru_dir / "structured_content.json"
     images_dir = mineru_dir / "images"
-    if not markdown_path.exists():
-        raise RuntimeError("MinerU did not produce markdown.md")
-    if not structured_path.exists():
-        raise RuntimeError("MinerU did not produce structured_content.json")
     return MineruArtifacts(
         directory=mineru_dir,
         markdown_path=markdown_path,
@@ -113,6 +103,47 @@ def parse_pdf(
         images_dir=images_dir,
         tier=tier,
     )
+
+
+def _resolve_mineru_python(path: Path | None) -> Path:
+    """Resolve a configured interpreter or a virtualenv directory."""
+    if path is None:
+        return Path(sys.executable)
+    candidate = path.expanduser()
+    if candidate.is_dir():
+        for executable in (
+            candidate / "bin" / "python",
+            candidate / "Scripts" / "python.exe",
+            candidate / "python.exe",
+        ):
+            if executable.exists():
+                return executable
+        raise RuntimeError(f"MinerU Python not found in virtualenv: {candidate}")
+    if not candidate.exists():
+        raise RuntimeError(f"MinerU Python not found: {candidate}")
+    return candidate
+
+
+_MINERU_CHECKED: set[str] = set()
+
+
+def _ensure_mineru_available(python: Path) -> None:
+    key = str(python)
+    if key in _MINERU_CHECKED:
+        return
+    proc = subprocess.run(
+        [str(python), "-c", "import mineru"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"MinerU is not installed in {python}. "
+            "Run `ptp-install-mineru --accept-license` for an isolated install, "
+            "or `uv sync --extra mineru` for the development environment."
+        )
+    _MINERU_CHECKED.add(key)
 
 
 def parse_pdf_subprocess(
@@ -123,29 +154,30 @@ def parse_pdf_subprocess(
     tier: str,
 ) -> MineruArtifacts:
     """Run MinerU in a child process so its GPU memory is released afterwards."""
+    python = _resolve_mineru_python(config.mineru.python)
+    _ensure_mineru_available(python)
+    worker = Path(__file__).with_name("mineru_worker.py").resolve()
     cmd = [
-        sys.executable,
-        "-m",
-        "ptp.mineru_worker",
+        str(python),
+        str(worker),
         "--pdf",
         str(pdf_path),
         "--work-dir",
         str(work_dir),
         "--tier",
         tier,
-        "--device",
-        selection.mode,
-        "--gpu-backend",
-        config.gpu_backend,
     ]
-    if config.gpu_index is not None:
-        cmd.extend(["--gpu-index", str(config.gpu_index)])
-    if isinstance(config.threads, int):
-        cmd.extend(["--threads", str(config.threads)])
     if config.mineru.image_analysis:
         cmd.append("--image-analysis")
-    logger.info("MinerU child process: tier=%s device=%s", tier, selection.mode)
-    proc = subprocess.run(cmd, check=False)
+    env = os.environ.copy()
+    env.update(mineru_env_vars(config, selection))
+    logger.info(
+        "MinerU child process: tier=%s device=%s python=%s",
+        tier,
+        selection.mode,
+        python,
+    )
+    proc = subprocess.run(cmd, check=False, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"MinerU child process failed with exit code {proc.returncode}")
     mineru_dir = work_dir / "mineru"

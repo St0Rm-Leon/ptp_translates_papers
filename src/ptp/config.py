@@ -11,6 +11,7 @@ import yaml
 Tier = Literal["auto", "flash", "basic", "standard", "advanced"]
 Device = Literal["auto", "cpu", "gpu"]
 GpuBackend = Literal["auto", "cuda", "vulkan", "metal"]
+MineruModelSource = Literal["auto", "huggingface", "modelscope", "local"]
 RenderEngine = Literal["xelatex", "lualatex", "tectonic", "typst"]
 RenderLayout = Literal["single", "bilingual"]
 
@@ -25,6 +26,9 @@ class MineruConfig:
     device: Device | None = None
     auto_basic_text_coverage: float = 0.8
     image_analysis: bool = False
+    python: Path | None = None
+    model_source: MineruModelSource = "auto"
+    model_dir: Path | None = None
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -107,6 +111,12 @@ class Config:
         mineru_changes: dict[str, Any] = {}
         if getattr(args, "tier", None) is not None:
             mineru_changes["tier"] = args.tier
+        if getattr(args, "mineru_python", None) is not None:
+            mineru_changes["python"] = Path(args.mineru_python).expanduser()
+        if getattr(args, "mineru_model_source", None) is not None:
+            mineru_changes["model_source"] = args.mineru_model_source
+        if getattr(args, "mineru_model_dir", None) is not None:
+            mineru_changes["model_dir"] = Path(args.mineru_model_dir).expanduser()
         translation_changes: dict[str, Any] = {}
         if getattr(args, "model", None) is not None:
             translation_changes["model"] = Path(args.model).expanduser()
@@ -157,6 +167,14 @@ def _optional_path(value: Any, base: Path) -> Path | None:
     return _resolve_path(value, base, "path")
 
 
+def _optional_runtime_path(value: Any, base: Path) -> Path | None:
+    """Resolve a path without following a venv's python symlink."""
+    if value is None or str(value).strip() == "":
+        return None
+    path = Path(str(value)).expanduser()
+    return path if path.is_absolute() else (base / path)
+
+
 def _int_or_auto(value: Any, where: str) -> int | str:
     if value == "auto" or value is None:
         return "auto"
@@ -196,7 +214,16 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
     raw_mineru = _mapping(data.get("mineru"), "mineru")
     _unknown_keys(
         raw_mineru,
-        {"tier", "device", "auto_basic_text_coverage", "image_analysis", "extra_args"},
+        {
+            "tier",
+            "device",
+            "auto_basic_text_coverage",
+            "image_analysis",
+            "python",
+            "model_source",
+            "model_dir",
+            "extra_args",
+        },
         "mineru",
     )
     raw_translation = _mapping(data.get("translation"), "translation")
@@ -245,6 +272,9 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
         device=raw_mineru.get("device"),
         auto_basic_text_coverage=float(raw_mineru.get("auto_basic_text_coverage", 0.8)),
         image_analysis=bool(raw_mineru.get("image_analysis", False)),
+        python=_optional_runtime_path(raw_mineru.get("python"), base),
+        model_source=raw_mineru.get("model_source", "auto"),
+        model_dir=_optional_path(raw_mineru.get("model_dir"), base),
         extra_args=[str(v) for v in raw_mineru.get("extra_args", [])],
     )
     translation = TranslationConfig(
@@ -310,6 +340,8 @@ def _validate(config: Config) -> None:
         raise ConfigError("mineru.tier must be auto, flash, basic, standard or advanced")
     if config.mineru.device not in {None, "auto", "cpu", "gpu"}:
         raise ConfigError("mineru.device must be auto, cpu or gpu")
+    if config.mineru.model_source not in {"auto", "huggingface", "modelscope", "local"}:
+        raise ConfigError("mineru.model_source must be auto, huggingface, modelscope or local")
     if config.device not in {"auto", "cpu", "gpu"}:
         raise ConfigError("device must be auto, cpu or gpu")
     if config.gpu_backend not in {"auto", "cuda", "vulkan", "metal"}:

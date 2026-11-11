@@ -1,4 +1,4 @@
-from ptp.bilingual import build_bilingual_tex, build_units
+from ptp.bilingual import BilingualUnit, build_bilingual_tex, build_units
 from ptp.config import RenderConfig
 
 
@@ -66,3 +66,68 @@ def test_build_bilingual_tex_has_columns_and_full_width_blocks():
     assert "A source reference." in tex
     assert "译文：A source paragraph." in tex
     assert "译文：A source reference." not in tex
+
+
+def test_page_footnote_is_collected_into_notes_section():
+    footnote = (
+        '<small><span class="docvortex-page-footnote" '
+        'data-block-type="page_footnote" style="color:#6b7280">'
+        "Received 30 October 2022; Accepted 11 February 2023"
+        "</span></small>"
+    )
+    units = build_units(_source() + "\n\n" + footnote, FakeTranslator())
+    note = next(unit for unit in units if unit.kind == "footnote")
+    assert note.translated is None
+    assert "Received 30 October 2022" in note.source
+
+    tex = build_bilingual_tex(units, RenderConfig(layout="bilingual"))
+    assert r"\section*{Notes / 注释}" in tex
+    assert "Received 30 October 2022" in tex
+    assert tex.index("A source reference.") < tex.index(r"\section*{Notes / 注释}")
+
+
+def test_continuation_after_figure_is_merged():
+    prefix = "The first part ends mid sentence, " + "technical detail. " * 20
+    source = (
+        "# A Test Paper\n\n"
+        f"{prefix}In the workshop,\n\n"
+        "![](image/fig1.jpg)\n\n"
+        "Figure 1. A source figure caption.\n\n"
+        "the second part continues with lowercase text.\n"
+    )
+    units = build_units(source, FakeTranslator())
+    text_units = [unit for unit in units if unit.kind == "text"]
+    assert len(text_units) == 1
+    assert "In the workshop, the second part" in text_units[0].source
+    assert text_units[0].translated and text_units[0].translated.startswith("译文：")
+
+    figure_index = next(i for i, unit in enumerate(units) if unit.kind == "figure")
+    text_index = next(i for i, unit in enumerate(units) if unit.kind == "text")
+    assert figure_index < text_index
+
+
+def test_complete_paragraph_is_not_merged_across_figure():
+    prefix = "The first part ends here. " + "Additional detail. " * 20
+    source = (
+        "# A Test Paper\n\n"
+        f"{prefix}\n\n"
+        "![](image/fig1.jpg)\n\n"
+        "Figure 1. A source figure caption.\n\n"
+        "the next paragraph starts here.\n"
+    )
+    units = build_units(source, FakeTranslator())
+    assert len([unit for unit in units if unit.kind == "text"]) == 2
+
+
+def test_sup_and_sub_tags_become_latex_commands():
+    units = [
+        BilingualUnit(
+            "text",
+            "exposure<sup>2</sup> and 222<sub>Rn</sub>",
+            translated="暴露<sup>2</sup>和 222<sub>Rn</sub>",
+        )
+    ]
+    tex = build_bilingual_tex(units, RenderConfig(layout="bilingual"))
+    assert r"exposure\textsuperscript{2}" in tex
+    assert r"222\textsubscript{Rn}" in tex
+    assert r"暴露\textsuperscript{2}" in tex

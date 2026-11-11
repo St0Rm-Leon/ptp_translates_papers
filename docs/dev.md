@@ -1,6 +1,6 @@
 # PTP Translates Papers — 开发者文档
 
-本文面向继续开发、调试和扩展 `ptp translates papers` 的开发者。用户配置说明见 [user_manual.md](user_manual.md)，产品范围见 [README.md](../README.md)。
+本文面向继续开发、调试和扩展 `ptp translates papers` 的开发者。用户配置说明见 [user_manual.md](user_manual.md)，功能与快速开始见 [README.md](../README.md)。
 
 ## 1. 项目定位
 
@@ -17,6 +17,7 @@ PDF → MinerU → Markdown + 图片 + 结构化 JSON
 - 10 分钟是**软目标**，不是 SLA；普通 4–6 页带文本层论文优先。
 - v1 不追求与原 PDF 版式一致；翻译和渲染解耦，为后续自定义版式留接口。
 - CPU 和 GPU 都支持；GPU 是加速项，不是必需项。
+- MinerU 是可选组件，可安装到独立 venv；PTP 主进程不 import MinerU，保持独立程序边界。
 - 表格采用“翻译后转 Markdown 表格”的方案，不直接依赖 Pandoc 对 raw HTML table 的渲染。
 - 复杂 HTML 表格的 `rowspan`/`colspan` 会展开成近似网格，版式仍可继续优化。
 
@@ -28,7 +29,8 @@ src/ptp/
   config.py           dataclass 配置、YAML 解析、优先级与校验
   pipeline.py         单文档/多文档编排、状态、续跑、阶段调用
   mineru_runner.py    文本层检测、tier 决策、MinerU 子进程调用
-  mineru_worker.py    独立 MinerU 子进程入口
+  mineru_worker.py    独立 MinerU 子进程入口（只依赖 stdlib + MinerU）
+  install_mineru.py   在独立 venv 中安装 MinerU
   translate.py        分块、占位符保护、llama-server 生命周期
   figures.py          图片复制/重命名、图注提取、fig_comments.txt
   markdown_tables.py  HTML table → Markdown pipe table、数学实体规范化
@@ -41,6 +43,7 @@ tests/
   test_bilingual.py
   test_devices.py
   test_figures.py
+  test_install_mineru.py
   test_markdown_tables.py
   test_translate.py
 config.example.yaml
@@ -55,8 +58,9 @@ config.example.yaml
 3. `run_pipeline()` 为每个输入建立 `outputs/<stem>_zh/`。
 4. `inspect_text_layer()` 用 pypdfium2 统计每页文本字符数。
 5. `resolve_tier()` 根据设备、文本覆盖率和 `mineru.tier` 决定档位。
-6. `parse_pdf_subprocess()` 启动 `python -m ptp.mineru_worker`：
-   - 子进程运行 MinerU；
+6. `parse_pdf_subprocess()` 用 `mineru.python`（默认 PTP 的 Python）启动独立脚本 `ptp/mineru_worker.py`：
+   - 父进程传入 `MINERU_*` 环境变量（设备、模型来源、模型目录）；
+   - 子进程只依赖标准库和 MinerU，不 import PTP；
    - 保存 `markdown.md`、`structured_content.json`、`images/`；
    - 子进程退出，释放 VLM/ONNX 占用的显存。
 7. 主进程读取 Markdown 和结构化 JSON，`prepare_figures()`：
@@ -178,19 +182,19 @@ MinerU `standard` 会在同一进程内加载 VLM（llama.cpp）和 ONNX 小模�
 - 在 4 GB 显存上翻译速度可能从约 78 tok/s 掉到约 5 tok/s；
 - 总翻译时间可能从约 46 s 增加到约 585 s。
 
-因此 `parse_pdf_subprocess()` 通过 `python -m ptp.mineru_worker` 隔离 MinerU。子进程退出后显存释放，再启动翻译服务。这是标准档性能的关键设计，不要改回进程内直接调用。
+因此 `parse_pdf_subprocess()` 用独立脚本 `ptp/mineru_worker.py` 隔离 MinerU。子进程退出后显存释放，再启动翻译服务。这是标准档性能的关键设计，不要改回进程内直接调用。
 
-`mineru_worker.py` 接收：
+`mineru_worker.py` 只依赖标准库和 MinerU，不 import PTP，因此可以用 `mineru.python` 指向一个独立 venv：
 
 ```text
---pdf --work-dir --tier --device --gpu-backend --gpu-index --threads --image-analysis
+--pdf --work-dir --tier --image-analysis
 ```
 
-它构造临时 `Config`，调用 `select_device()`，然后复用 `mineru_runner.parse_pdf()`。
+设备、模型来源和模型目录通过父进程传入的环境变量控制，而不是命令行参数。
 
 ### 5.3 MinerU 环境变量
 
-`devices.mineru_environment()` 会在解析期间设置并在结束后恢复：
+`devices.mineru_env_vars()` 生成环境变量，父进程传给 MinerU 子进程：
 
 ```text
 MINERU_DEVICE_MODE
@@ -200,9 +204,19 @@ GGML_VK_VISIBLE_DEVICES
 MINERU_INTRA_OP_NUM_THREADS
 MINERU_INTER_OP_NUM_THREADS
 MINERU_CPU_NUM_THREADS
+MINERU_MODEL_SOURCE
+MINERU_MODEL_BASE_DIR
 ```
 
-其中 `GGML_VK_VISIBLE_DEVICES` 用于把 MinerU 的 Vulkan 设备限制到选中的 GPU。详细 GPU 策略见第 8 节。
+其中 `GGML_VK_VISIBLE_DEVICES` 用于把 MinerU 的 Vulkan 设备限制到选中的 GPU。`MINERU_MODEL_SOURCE` / `MINERU_MODEL_BASE_DIR` 对应配置：
+
+```yaml
+mineru:
+  model_source: auto  # auto | huggingface | modelscope | local
+  model_dir: null     # MinerU 模型根目录
+```
+
+详细 GPU 策略见第 8 节。
 
 ### 5.4 模型下载
 
@@ -212,6 +226,16 @@ MinerU 首次运行会下载：
 - `MinerU2.5-Pro-2605-1.2B-GGUF` 的 VLM 主模型和 mmproj。
 
 这些缓存在 `~/.mineru/models/`。如果 Hugging Face 下载中断，可以重试；MinerU 使用 `.mineru_complete` 标记完整仓库。不要手动删除正在使用的缓存。
+
+离线发行版设置：
+
+```yaml
+mineru:
+  model_source: local
+  model_dir: /path/to/mineru/models
+```
+
+`ptp-install-mineru` 负责把 MinerU 安装到独立 venv；它不移动模型缓存，模型仍由 MinerU 在首次解析时下载，或由离线包预先放置。
 
 ## 6. 图片与图注
 
@@ -389,7 +413,7 @@ pandoc <zh.md> \
 `bilingual.py` 不经过 Pandoc 的单栏 PDF 路径，而是：
 
 1. `split_markdown_blocks()` 把 `en.md` 分成 block；
-2. `build_units()` 做段落级配对，图/表/公式/代码/参考文献变成 `full_width` unit；
+2. `build_units()` 做段落级配对，图/表/公式/代码/参考文献/页脚注变成 `full_width` unit；跨图续段会合并；
 3. 每个文本 unit 用 `pandoc -f markdown -t latex` 转为 LaTeX 片段；
 4. 生成完整 `.tex`，用 `xelatex` 编译两次。
 
@@ -400,13 +424,17 @@ pandoc <zh.md> \
 - 图表用 `\begin{center}` + `\includegraphics`/`longtable` 全宽输出，前后关闭/重开 `paracol`。
 - HTML 表格保留 `rowspan`/`colspan`，由 Pandoc HTML→LaTeX 生成 `\multirow`/`\multicolumn`。
 - 图注、表注和参考文献不翻译；标题双语，作者/单位区尽量保留原文。
+- 页脚注（`page_footnote`）识别为 `footnote` unit，不参与正文配对，文末统一输出 `Notes / 注释` 小节。
+- 续段合并：前段不以句末标点结束、后段以小写字母开头，且中间只隔图/表时，合并为一个段落重新翻译，放在图/表之后。
+- `<sup>`/`<sub>` 在 `_markdown_to_latex()` 前转换为 `\textsuperscript`/`\textsubscript`；单栏路径在 `render.py` 做同样处理。
 - `fig_comments.txt` 在双语模式写 `ZH: [未翻译]`。
 - 需要 `hyperref`（ORCID/email）、`amsmath`、`multirow`、`calc`、`\pandocbounded` 等 Pandoc 兼容宏。
+- 已知限制：长段落跨页时，左右栏按各自长度独立换页，仍可能产生段落内部漂移；彻底同步需要句级对齐。
 
 ## 10. 开发命令与测试
 
 ```bash
-uv sync
+uv sync --extra mineru
 uv run ptp --help
 uv run ptp --dry-run -i inputs/nci195.pdf --device cpu
 uv run ptp --download-model
@@ -433,6 +461,8 @@ uv run ruff check src tests
 双语模式已用 4 篇 PDF（4/6/9/11 页）验证；大页数论文的翻译和 XeLaTeX 编译时间会线性增加。
 
 `llama-bench`（Vulkan1）：pp128 ≈ 1021 t/s，tg64 ≈ 78.7 t/s。
+
+当前状态：单栏、双语、表格、图注、续跑和 MinerU 独立 venv 已实现；CUDA 和 `--parallel` 仍需在更多硬件上验证。自定义版式和 7B 属于后续工作。
 
 ## 11. 故障排查
 
@@ -500,6 +530,6 @@ uv run ptp --download-model
 
 - 不要把 `outputs/`、`models/`、`.venv/` 提交进 git。
 - 不要静默吞掉翻译占位符丢失、MinerU 失败或 Pandoc 失败。
-- 修改配置字段时同步更新 `config.example.yaml`、`README.md` 和本文档。
+- 修改配置字段时同步更新 `config.example.yaml`、`docs/user_manual.md` 和本文档。
 - 修改表格/翻译逻辑时补 `tests/`，默认测试不要依赖网络或真实模型。
 - GPU 相关修改必须在 `--device cpu` 下回归一次，确保 CPU 路径不坏。

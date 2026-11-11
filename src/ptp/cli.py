@@ -30,6 +30,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="MinerU parsing tier",
     )
     parser.add_argument(
+        "--mineru-python",
+        metavar="PATH",
+        help="Python executable/venv for the isolated MinerU worker",
+    )
+    parser.add_argument(
+        "--mineru-model-source",
+        choices=["auto", "huggingface", "modelscope", "local"],
+        help="where MinerU downloads/loads models",
+    )
+    parser.add_argument(
+        "--mineru-model-dir",
+        metavar="DIR",
+        help="MinerU model base directory (contains model subdirectories)",
+    )
+    parser.add_argument(
         "--device",
         choices=["auto", "cpu", "gpu"],
         help="device policy for translation and MinerU",

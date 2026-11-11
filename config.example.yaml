@@ -17,6 +17,9 @@ mineru:
   tier: auto           # auto | flash | basic | standard | advanced
   auto_basic_text_coverage: 0.8
   image_analysis: false
+  python: null         # separate MinerU venv python; null = PTP's python
+  model_source: auto   # auto | huggingface | modelscope | local
+  model_dir: null      # MinerU model base directory; null = ~/.mineru/models
 
 translation:
   model: models/Hy-MT2-1.8B-Q4_K_M.gguf

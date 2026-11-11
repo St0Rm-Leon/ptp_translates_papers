@@ -9,6 +9,28 @@ from bs4 import BeautifulSoup, Tag
 
 _MATH_SPAN = re.compile(r"(\$\$.*?\$\$|\$[^$\n]+\$)", re.DOTALL)
 _TABLE_BLOCK = re.compile(r"<table\b.*?</table>", re.IGNORECASE | re.DOTALL)
+_SUP_TAG = re.compile(r"<sup\b[^>]*>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
+_SUB_TAG = re.compile(r"<sub\b[^>]*>(.*?)</sub>", re.IGNORECASE | re.DOTALL)
+_FENCED_BLOCK = re.compile(r"(^[ \t]*```.*?^[ \t]*```[ \t]*$)", re.MULTILINE | re.DOTALL)
+
+
+def inline_html_to_latex(text: str) -> str:
+    """Convert HTML sup/sub tags to LaTeX commands.
+
+    Pandoc's Markdown reader treats ``<sup>``/``<sub>`` as raw HTML and drops
+    them when writing LaTeX, leaving the content at normal baseline size.
+    """
+    text = _SUP_TAG.sub(lambda match: r"\textsuperscript{" + match.group(1) + "}", text)
+    text = _SUB_TAG.sub(lambda match: r"\textsubscript{" + match.group(1) + "}", text)
+    return text
+
+
+def inline_html_to_latex_markdown(text: str) -> str:
+    """Apply :func:`inline_html_to_latex` outside fenced code blocks."""
+    parts = _FENCED_BLOCK.split(text)
+    for index in range(0, len(parts), 2):
+        parts[index] = inline_html_to_latex(parts[index])
+    return "".join(parts)
 
 
 def normalize_math_entities(text: str) -> str:

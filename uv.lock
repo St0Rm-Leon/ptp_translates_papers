@@ -2083,9 +2083,13 @@ source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "huggingface-hub" },
-    { name = "mineru" },
     { name = "pypdfium2" },
     { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+mineru = [
+    { name = "mineru" },
 ]
 
 [package.dev-dependencies]
@@ -2098,10 +2102,11 @@ dev = [
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "huggingface-hub", specifier = ">=0.30" },
-    { name = "mineru", specifier = ">=4.1,<5" },
+    { name = "mineru", marker = "extra == 'mineru'", specifier = ">=4.1,<5" },
     { name = "pypdfium2", specifier = ">=5.13" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
+provides-extras = ["mineru"]
 
 [package.metadata.requires-dev]
 dev = [
