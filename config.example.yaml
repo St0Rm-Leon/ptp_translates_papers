@@ -1,0 +1,42 @@
+# PTP Translates Papers — example configuration.
+# Copy to config.yaml and edit. CLI options override these values.
+version: 1
+
+input: inputs
+output: outputs
+keep_temp: true
+resume: false
+threads: auto          # integer or "auto"; --task16 is equivalent to 16
+parallel: 1            # concurrent documents
+
+device: auto           # auto | cpu | gpu
+gpu_backend: auto      # auto | cuda | vulkan | metal
+gpu_index: null        # llama.cpp device index; null = automatically prefer a discrete GPU
+
+mineru:
+  tier: auto           # auto | flash | basic | standard | advanced
+  auto_basic_text_coverage: 0.8
+  image_analysis: false
+
+translation:
+  model: models/Hy-MT2-1.8B-Q4_K_M.gguf
+  server_bin: llama-server
+  server_url: null     # set to use an already running llama-server
+  host: 127.0.0.1
+  port: 0              # 0 = choose a free port
+  threads: null        # null = follow top-level threads
+  gpu_layers: auto
+  chunk_tokens: 800
+  temperature: 0.3
+  top_p: 0.6
+  top_k: 20
+  repetition_penalty: 1.05
+  max_tokens: 2048
+  timeout: 600
+  context_size: 4096
+  glossary: null
+
+render:
+  engine: xelatex
+  cjk_font: Noto Serif CJK SC
+  template: null       # reserved for future custom layout templates
