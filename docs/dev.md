@@ -28,10 +28,10 @@ src/ptp/
   cli.py              argparse CLI、参数覆盖、错误输出
   config.py           dataclass 配置、YAML 解析、优先级与校验
   pipeline.py         单文档/多文档编排、状态、续跑、阶段调用
-  mineru_runner.py    文本层检测、tier 决策、MinerU 子进程调用
-  mineru_worker.py    独立 MinerU 子进程入口（只依赖 stdlib + MinerU）
+  mineru_runner.py    文本层检测、tier 决策、mineru-kit CLI 调用和 ZIP 解压
   install_mineru.py   在独立 venv 中安装 MinerU
   translate.py        分块、占位符保护、llama-server 生命周期
+  compat.py           跨平台进程编码、工具路径解析、标准输出 UTF-8
   figures.py          图片复制/重命名、图注提取、fig_comments.txt
   markdown_tables.py  HTML table → Markdown pipe table、数学实体规范化
   bilingual.py        双语 block 配对、paracol LaTeX、全宽图表
@@ -41,12 +41,26 @@ tests/
   test_cli.py
   test_config.py
   test_bilingual.py
+  test_compat.py
   test_devices.py
   test_figures.py
   test_install_mineru.py
   test_markdown_tables.py
+  test_mineru_runner.py
+  test_pipeline.py
+  test_render.py
   test_translate.py
 config.example.yaml
+scripts/windows/
+  build_portable.ps1       完整 Windows x64 便携包构建
+  build_components.ps1     拆分为 core / hy-model / mineru 组件
+  package_components.ps1   core / hy-model / mineru 三个 7z 发布包
+  package_archives.ps1     旧版完整包打包脚本（保留兼容）
+  verify_portable.ps1      doctor + dry-run + flash 冒烟测试
+  install/                 install-hy / install-mineru / install-all 脚本
+  ptp_launcher.cs          瘦启动器源码
+  ptp.exe.manifest         longPathAware / UTF-8 代码页 manifest
+  README.md                构建说明
 ```
 
 ## 3. 端到端流程
@@ -58,11 +72,11 @@ config.example.yaml
 3. `run_pipeline()` 为每个输入建立 `outputs/<stem>_zh/`。
 4. `inspect_text_layer()` 用 pypdfium2 统计每页文本字符数。
 5. `resolve_tier()` 根据设备、文本覆盖率和 `mineru.tier` 决定档位。
-6. `parse_pdf_subprocess()` 用 `mineru.python`（默认 PTP 的 Python）启动独立脚本 `ptp/mineru_worker.py`：
+6. `parse_pdf_subprocess()` 用 `mineru.python` 旁边/配置中的 `mineru-kit` 启动独立 CLI：
+   - 命令为 `mineru-kit parse <pdf> -o <zip> --format zip --tier <tier> --pages all`；
    - 父进程传入 `MINERU_*` 环境变量（设备、模型来源、模型目录）；
-   - 子进程只依赖标准库和 MinerU，不 import PTP；
-   - 保存 `markdown.md`、`structured_content.json`、`images/`；
-   - 子进程退出，释放 VLM/ONNX 占用的显存。
+   - CLI 输出 ZIP，PTP 安全解压出 `markdown.md`、`structured_content.json`、`images/`；
+   - CLI 退出后释放 VLM/ONNX 占用的显存；MinerU 进程内没有 PTP GPL 代码。
 7. 主进程读取 Markdown 和结构化 JSON，`prepare_figures()`：
    - 把图片复制到 `temp/image/`；
    - 将实际图片重命名为 `fig1.jpg`、`fig2.jpg`…；
@@ -174,7 +188,7 @@ CLI 显式参数 > config.yaml > dataclass 默认值
 
 注意：这是启发式，**不判断表格复杂度**。表格多或公式多时，建议显式 `--tier standard`。
 
-### 5.2 为什么要用子进程
+### 5.2 为什么用 MinerU CLI 子进程
 
 MinerU `standard` 会在同一进程内加载 VLM（llama.cpp）和 ONNX 小模型。若主进程随后启动 `llama-server`：
 
@@ -182,15 +196,15 @@ MinerU `standard` 会在同一进程内加载 VLM（llama.cpp）和 ONNX 小模�
 - 在 4 GB 显存上翻译速度可能从约 78 tok/s 掉到约 5 tok/s；
 - 总翻译时间可能从约 46 s 增加到约 585 s。
 
-因此 `parse_pdf_subprocess()` 用独立脚本 `ptp/mineru_worker.py` 隔离 MinerU。子进程退出后显存释放，再启动翻译服务。这是标准档性能的关键设计，不要改回进程内直接调用。
+因此 `parse_pdf_subprocess()` 用独立的 `mineru-kit parse` 进程隔离 MinerU。CLI 退出后显存释放，再启动翻译服务。这是标准档性能的关键设计，不要改回进程内直接调用。
 
-`mineru_worker.py` 只依赖标准库和 MinerU，不 import PTP，因此可以用 `mineru.python` 指向一个独立 venv：
+命令形态：
 
 ```text
---pdf --work-dir --tier --image-analysis
+mineru-kit parse <pdf> -o <work>/mineru.zip --format zip --tier <tier> --pages all
 ```
 
-设备、模型来源和模型目录通过父进程传入的环境变量控制，而不是命令行参数。
+`--format zip` 通过 MinerU 的 `ParseResult.save()` 生成 `markdown.md`、`structured_content.json` 和 `images/`。PTP 只负责安全解压和读取结果，CLI 进程内没有 PTP 的 GPL 代码；这同时保持 MinerU 的独立程序/许可证边界。设备、模型来源和模型目录通过父进程传入的环境变量控制。
 
 ### 5.3 MinerU 环境变量
 
@@ -199,6 +213,8 @@ MinerU `standard` 会在同一进程内加载 VLM（llama.cpp）和 ONNX 小模�
 ```text
 MINERU_DEVICE_MODE
 MINERU_MODEL_ONNX_DEVICE
+MINERU_MODEL_SMALL_BACKEND      # Windows: onnx
+MINERU_MODEL_VLM_ENGINE         # Windows: llama-cpp
 MINERU_LLAMA_CPP_BACKEND
 GGML_VK_VISIBLE_DEVICES
 MINERU_INTRA_OP_NUM_THREADS
@@ -206,7 +222,13 @@ MINERU_INTER_OP_NUM_THREADS
 MINERU_CPU_NUM_THREADS
 MINERU_MODEL_SOURCE
 MINERU_MODEL_BASE_DIR
+MINERU_HOME
 ```
+
+On Windows the base MinerU package uses ONNX/DirectML for small models and
+llama.cpp for the VLM; `ptp` pins those engines explicitly. The MinerU child
+process also gets `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8` from
+`compat.utf8_env()`.
 
 其中 `GGML_VK_VISIBLE_DEVICES` 用于把 MinerU 的 Vulkan 设备限制到选中的 GPU。`MINERU_MODEL_SOURCE` / `MINERU_MODEL_BASE_DIR` 对应配置：
 
@@ -402,6 +424,7 @@ pandoc <zh.md> \
 ```
 
 - `render.engine` 支持 `xelatex`、`lualatex`、`tectonic`、`typst`；当前实际验证的是 `xelatex`。
+- Windows/便携包设置 `render.cjk_font_file` 时，`render.py` 会生成 `_ptp_fonts.tex` 并通过 `--include-in-header` 让 XeLaTeX 直接按文件加载字体，不依赖系统字体安装；双语路径在 `bilingual_preamble()` 中做同样处理。
 - XeLaTeX 需要 `texlive-xetex`、`texlive-latexrecommended`、`texlive-fontsrecommended`、`texlive-langchinese`；双语模式还需要 `texlive-latexextra`。
 - `texlive-langchinese` 提供 `ctexhook.sty`；只装 `texlive-langcjk` 会在 `CJKmainfont` 时报缺包。
 - Tectonic 默认 bundle 约 2.62 GB，v1 不使用。
@@ -419,6 +442,7 @@ pandoc <zh.md> \
 
 关键点：
 
+- 所有 Pandoc/XeLaTeX 子进程通过 `compat.subprocess_text_options()` 显式使用 UTF-8，避免 Windows GBK/CP1252 下中文输入输出失败。
 - 需要 `texlive-latexextra` 的 `paracol`，当前只支持 `render.engine: xelatex`。
 - 每对文本使用 `\begin{paracol}{2}` / `\switchcolumn` / `\switchcolumn[0]*`，`\linespread` 控制左右栏行距。
 - 图表用 `\begin{center}` + `\includegraphics`/`longtable` 全宽输出，前后关闭/重开 `paracol`。
@@ -437,11 +461,46 @@ pandoc <zh.md> \
 uv sync --extra mineru
 uv run ptp --help
 uv run ptp --dry-run -i inputs/nci195.pdf --device cpu
+uv run ptp --doctor
 uv run ptp --download-model
 uv run ptp -i inputs/nci195.pdf -o outputs
 uv run pytest -q
 uv run ruff check src tests
 ```
+
+### 10.1 Windows 约定
+
+- 所有文本子进程必须用 `compat.subprocess_text_options()`，显式 UTF-8，避免 GBK/CP1252 乱码；`bilingual.py` 的 `input=` 尤其重要。
+- `compat.configure_stdio()` 在 CLI 启动时把重定向的 stdout/stderr 设为 UTF-8。
+- 工具路径用 `compat.resolve_tool()`：裸名走 PATH，含目录的值走文件路径。配置里的相对路径按 `config.yaml` 所在目录解析。
+- `translation.server_bin`、`translation.llama_cli`、`render.pandoc`、`render.xelatex` 支持绝对/相对路径，Windows 便携包不需要把工具目录加入全局 PATH，避免 MinerU 的 DLL 冲突。
+- `render.cjk_font_file`/`cjk_font_bold_file` 让 XeLaTeX 直接按文件加载字体，不依赖 Windows 字体安装。
+- `--doctor` 检查 Pandoc、XeLaTeX、llama.cpp、MinerU、字体、模型和输出目录。
+- 单元测试必须跨平台：不要写 `#!/bin/sh` 或依赖 `/tmp`；venv Python 用 `Path.stem == "python"` 同时匹配 `python`/`python.exe`。
+- `ptp` 支持位置参数输入，便于把 PDF 拖到 `ptp.exe` 上；`-i` 仍然是主用法。
+
+### 10.2 Windows E2E 与便携包
+
+2026-11 在 Windows 11 x64 + Ryzen 7 9700X + RTX 5060 上验证：
+
+| 模式 | MinerU | 翻译 | XeLaTeX | 结果 |
+|---|---:|---:|---:|---|
+| CPU `flash` | 3.4 s | 81.5 s | 54.4 s（首次装包） | 通过 |
+| CPU `basic` | 12.4 s | 67.0 s | 6.3 s | 通过 |
+| CPU `standard` | 21.8 s | 68.5 s | 2.6 s | 通过 |
+| Vulkan `standard` | 19.7 s | 21.3 s | 2.6 s | 通过 |
+| Vulkan `standard` + bilingual | — | — | — | 通过 |
+
+- `inputs/` 全部四篇 PDF（4/6/9/11 页）用 Vulkan `standard` 跑通；输出含中文正文。
+- Windows 下 MinerU 的 ONNX 小模型走 DirectML，VLM 走 `llama-cpp`；llama.cpp 使用 `b12283` Windows Vulkan/CPU 构建。
+- 便携包使用 **两个独立、可整体移动的 CPython 运行时**：`runtime/ptp` 和 `runtime/mineru`，避免 venv 路径绑定和 PyInstaller 冻结后 `sys.executable` 失效。
+- `ptp.exe` 是 .NET Framework 4.8 的瘦启动器，只设置 CWD/环境变量并调用 `runtime/ptp/python.exe -m ptp`；不把 `tools/llama` 或 TeX 加入全局 PATH，避免 MinerU DLL 冲突。
+- 便携包把用户文件放在根目录 `inputs/` 和 `outputs/`，`data/` 只保存 MinerU 配置、HF 缓存和日志；双击 `ptp.exe` 无需进入子目录。
+- 便携包用 TinyTeX + `render.cjk_font_file` 直接加载 Noto OTF，不需要系统字体或 MiKTeX。
+- 组件发行拆成 `core`、`hy-model`、`mineru` 三个 7z，避免单个资产超过 2 GB；完整版等于三者全部解压。
+- `core` 保留一个空的 `runtime/mineru` CPython（含 pip，不含 MinerU）；`install-mineru` 把固定版本的 MinerU 安装进去并下载/校验模型。
+- `install-hy`、`install-mineru`、`install-all` 支持在线安装、`-ModelDir`/`-Wheelhouse` 离线安装、`-DryRun`、许可证确认和 SHA256 校验。
+- 构建/打包/冒烟：`build_portable.ps1`、`build_components.ps1`、`package_components.ps1`、`verify_portable.ps1`。
 
 测试原则：
 
@@ -492,7 +551,7 @@ preamble 需要 `hyperref`，并定义 `\tightlist`。当前 `bilingual_preamble
 
 ### 翻译很慢（约 5 tok/s）
 
-检查是否有 MinerU VLM 与 llama-server 同时占用 GPU。`standard` 必须通过 `mineru_worker` 子进程运行；不要改回进程内直接调用。
+检查是否有 MinerU VLM 与 llama-server 同时占用 GPU。`standard` 必须通过 `mineru-kit parse` 子进程运行；不要改回进程内直接调用。
 
 ### 表格没有翻译
 

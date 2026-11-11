@@ -25,7 +25,13 @@
 - MinerU：通过 `--extra mineru` 或 `ptp-install-mineru`
 - GPU 可选：Vulkan/CUDA/Metal；没有 GPU 时用 `--device cpu`
 
-Arch Linux 的完整系统依赖命令见[用户手册](docs/user_manual.md#2-安装与首次运行)。
+Arch Linux 和 Windows 的完整系统依赖命令见[用户手册](docs/user_manual.md#2-安装与首次运行)。
+
+Windows 下 `llama-server.exe`、`llama-cli.exe`、Pandoc 和 XeLaTeX 可以不加入 PATH，直接在 `config.yaml` 的 `translation.server_bin`、`translation.llama_cli`、`render.pandoc`、`render.xelatex` 指定路径。Windows 默认没有 Noto CJK，可用 `render.cjk_font_file` 指向字体文件。安装后先运行：
+
+```powershell
+uv run ptp --doctor
+```
 
 ### 安装
 
@@ -80,6 +86,24 @@ outputs/<stem>_zh/<stem>_bilingual.pdf
 `-o` 是输出根目录，不是 PDF 文件路径。
 
 完整配置、CLI、输出结构和故障排查见[用户手册](docs/user_manual.md)；架构、模块和调试见[开发者文档](docs/dev.md)。
+
+## Windows 便携版
+
+仓库包含 Windows x64 便携包的构建脚本，不要求用户安装 Python/uv。发行包拆成三个组件：
+
+- `core`：PTP、Pandoc、TinyTeX、llama.cpp、字体、启动器和安装脚本。
+- `hy-model`：Hy-MT2 翻译模型。
+- `mineru`：MinerU runtime + MinerU 模型。
+
+支持三种用法：最简版（core + 安装脚本）、模型版（core + hy-model + MinerU 安装脚本）、完整版（三个组件全部解压，离线可用）。
+
+```powershell
+pwsh -File scripts/windows/build_portable.ps1
+pwsh -File scripts/windows/build_components.ps1
+pwsh -File scripts/windows/package_components.ps1
+```
+
+产物在 `build\windows-portable\` 和 `build\components\`，发布压缩包在 `dist\`。使用说明见 [Windows 便携版文档](docs/windows.md)，构建细节见 [scripts/windows/README.md](scripts/windows/README.md)。
 
 ---
 

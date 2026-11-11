@@ -69,14 +69,19 @@ def resolve_inputs(config: Config, cli_inputs: list[str] | None) -> list[Path]:
             elif path.is_file():
                 candidates.append(path)
             else:
-                raise PipelineError(f"input not found: {path}")
+                raise PipelineError(
+                    f"input not found: {path}; put PDFs in inputs\\ or pass -i FILE"
+                )
     else:
         if config.input.is_dir():
             candidates.extend(sorted(config.input.glob("*.pdf")))
         elif config.input.is_file():
             candidates.append(config.input)
         else:
-            raise PipelineError(f"input directory or file not found: {config.input}")
+            raise PipelineError(
+                f"input directory or file not found: {config.input}; "
+                "put PDFs in inputs\\ or pass -i FILE"
+            )
 
     unique: list[Path] = []
     seen: set[Path] = set()
@@ -89,7 +94,14 @@ def resolve_inputs(config: Config, cli_inputs: list[str] | None) -> list[Path]:
             seen.add(resolved)
             unique.append(resolved)
     if not unique:
-        raise PipelineError("no PDF inputs found")
+        location = (
+            ", ".join(str(Path(raw).expanduser()) for raw in cli_inputs)
+            if cli_inputs
+            else str(config.input)
+        )
+        raise PipelineError(
+            f"no PDF inputs found in {location}; put PDFs in inputs\\ or pass -i FILE"
+        )
     return unique
 
 
@@ -206,7 +218,7 @@ def process_document(
 
             logger.info("rendering bilingual PDF: %s", source.name)
             started = time.perf_counter()
-            render_bilingual_pdf(units, pdf_path, config.render, temp_dir, stem)
+            render_bilingual_pdf(units, pdf_path, config.render, temp_dir)
             result.timings["render"] = time.perf_counter() - started
             result.pdf = pdf_path
             state["stages"] = {**state.get("stages", {}), "render": "completed"}

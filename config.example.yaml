@@ -20,10 +20,12 @@ mineru:
   python: null         # separate MinerU venv python; null = PTP's python
   model_source: auto   # auto | huggingface | modelscope | local
   model_dir: null      # MinerU model base directory; null = ~/.mineru/models
+  home: null           # MINERU_HOME; null = ~/.mineru (useful for portable bundles)
 
 translation:
   model: models/Hy-MT2-1.8B-Q4_K_M.gguf
-  server_bin: llama-server
+  server_bin: llama-server  # bare name on PATH or path to llama-server.exe
+  llama_cli: llama-cli      # bare name on PATH or path to llama-cli.exe
   server_url: null     # set to use an already running llama-server
   host: 127.0.0.1
   port: 0              # 0 = choose a free port
@@ -43,6 +45,10 @@ render:
   layout: single       # single | bilingual
   engine: xelatex
   cjk_font: Noto Serif CJK SC
+  cjk_font_file: null  # optional .otf/.ttc path; keeps portable fonts off PATH
+  cjk_font_bold_file: null
+  pandoc: null         # null = pandoc on PATH; or tools/pandoc/pandoc.exe
+  xelatex: null        # null = xelatex on PATH; or tex/bin/windows/xelatex.exe
   template: null       # reserved for future custom layout templates
   source_ratio: 0.48   # bilingual left-column width
   source_line_spacing: 1.35

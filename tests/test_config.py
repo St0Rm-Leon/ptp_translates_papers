@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,6 +80,40 @@ def test_mineru_isolated_python_and_model_dir(tmp_path: Path):
     assert config.mineru.model_dir == tmp_path / "mineru-models"
 
 
+def test_portable_tool_and_font_paths_are_config_relative(tmp_path: Path):
+    (tmp_path / "tools" / "pandoc").mkdir(parents=True)
+    (tmp_path / "tools" / "pandoc" / "pandoc.exe").write_text("", encoding="utf-8")
+    (tmp_path / "tools" / "llama").mkdir(parents=True)
+    (tmp_path / "tools" / "llama" / "llama-server.exe").write_text("", encoding="utf-8")
+    (tmp_path / "tools" / "llama" / "llama-cli.exe").write_text("", encoding="utf-8")
+    (tmp_path / "fonts").mkdir()
+    (tmp_path / "fonts" / "NotoSerifCJKsc-Regular.otf").write_text("", encoding="utf-8")
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "version: 1\n"
+        "translation:\n"
+        "  server_bin: tools/llama/llama-server.exe\n"
+        "  llama_cli: tools/llama/llama-cli.exe\n"
+        "render:\n"
+        "  pandoc: tools/pandoc/pandoc.exe\n"
+        "  xelatex: xelatex\n"
+        "  cjk_font_file: fonts/NotoSerifCJKsc-Regular.otf\n",
+        encoding="utf-8",
+    )
+    config = load_config(str(path))
+    assert Path(config.translation.server_bin) == (
+        tmp_path / "tools" / "llama" / "llama-server.exe"
+    )
+    assert Path(config.translation.llama_cli) == (
+        tmp_path / "tools" / "llama" / "llama-cli.exe"
+    )
+    assert Path(config.render.pandoc) == (tmp_path / "tools" / "pandoc" / "pandoc.exe")
+    assert config.render.xelatex == "xelatex"
+    assert config.render.cjk_font_file == (
+        tmp_path / "fonts" / "NotoSerifCJKsc-Regular.otf"
+    )
+
+
 def test_invalid_mineru_model_source_is_rejected(tmp_path: Path):
     path = tmp_path / "config.yaml"
     path.write_text(
@@ -88,6 +123,7 @@ def test_invalid_mineru_model_source_is_rejected(tmp_path: Path):
         load_config(str(path))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may require privileges")
 def test_mineru_python_symlink_is_not_resolved(tmp_path: Path):
     venv_python = tmp_path / "venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)

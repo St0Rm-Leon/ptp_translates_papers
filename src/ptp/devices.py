@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 
+from .compat import resolve_tool, subprocess_text_options
 from .config import Config
 
 
@@ -47,7 +45,7 @@ _DEVICE_RE = re.compile(
 
 def list_devices(binary: str = "llama-cli") -> list[DeviceInfo]:
     """Return devices reported by llama.cpp, or an empty list if unavailable."""
-    executable = shutil.which(binary)
+    executable = resolve_tool(binary)
     if executable is None:
         return []
     try:
@@ -55,8 +53,8 @@ def list_devices(binary: str = "llama-cli") -> list[DeviceInfo]:
             [executable, "--list-devices"],
             check=False,
             capture_output=True,
-            text=True,
             timeout=20,
+            **subprocess_text_options(),
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -87,9 +85,9 @@ def _preferred_gpu(devices: list[DeviceInfo]) -> DeviceInfo:
     return devices[0]
 
 
-def select_device(config: Config, *, binary: str = "llama-cli") -> DeviceSelection:
+def select_device(config: Config, *, binary: str | None = None) -> DeviceSelection:
     """Resolve the top-level device policy for translation and MinerU."""
-    devices = list_devices(binary)
+    devices = list_devices(binary or config.translation.llama_cli)
     requested = config.device
     backend = config.gpu_backend
 
@@ -135,25 +133,15 @@ def _select_index(devices: list[DeviceInfo], index: int | None) -> DeviceInfo:
     )
 
 
-@contextmanager
-def mineru_environment(config: Config, selection: DeviceSelection) -> Iterator[None]:
-    """Set MinerU device/thread environment for one parse and restore it afterwards."""
-    updates = mineru_env_vars(config, selection)
-    previous = {key: os.environ.get(key) for key in updates}
-    try:
-        os.environ.update(updates)
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
 def mineru_env_vars(config: Config, selection: DeviceSelection) -> dict[str, str]:
     """Environment variables for an isolated MinerU worker process."""
     updates: dict[str, str] = {}
+    if os.name == "nt":
+        # MinerU 4.1 selects the small-model and VLM runtimes independently.
+        # The Windows x64 base package ships ONNX (DirectML) and llama.cpp;
+        # pin both so a full-extra install cannot select LMDeploy unexpectedly.
+        updates["MINERU_MODEL_SMALL_BACKEND"] = "onnx"
+        updates["MINERU_MODEL_VLM_ENGINE"] = "llama-cpp"
 
     if selection.mode == "cpu":
         updates["MINERU_DEVICE_MODE"] = "cpu"
@@ -185,4 +173,6 @@ def mineru_env_vars(config: Config, selection: DeviceSelection) -> dict[str, str
     updates["MINERU_MODEL_SOURCE"] = config.mineru.model_source
     if config.mineru.model_dir is not None:
         updates["MINERU_MODEL_BASE_DIR"] = str(config.mineru.model_dir)
+    if config.mineru.home is not None:
+        updates["MINERU_HOME"] = str(config.mineru.home)
     return updates

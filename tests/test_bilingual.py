@@ -1,4 +1,11 @@
-from ptp.bilingual import BilingualUnit, build_bilingual_tex, build_units
+from pathlib import Path
+
+from ptp.bilingual import (
+    BilingualUnit,
+    bilingual_preamble,
+    build_bilingual_tex,
+    build_units,
+)
 from ptp.config import RenderConfig
 
 
@@ -117,6 +124,17 @@ def test_complete_paragraph_is_not_merged_across_figure():
     )
     units = build_units(source, FakeTranslator())
     assert len([unit for unit in units if unit.kind == "text"]) == 2
+
+
+def test_bilingual_preamble_can_load_bundled_font_file(tmp_path: Path):
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    regular = fonts / "NotoSerifCJKsc-Regular.otf"
+    regular.write_text("", encoding="utf-8")
+    tex = bilingual_preamble(RenderConfig(cjk_font_file=regular))
+    assert "\\setCJKmainfont[Path={" in tex
+    assert regular.name in tex
+    assert fonts.as_posix() in tex
 
 
 def test_sup_and_sub_tags_become_latex_commands():

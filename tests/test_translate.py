@@ -3,6 +3,7 @@ from ptp.devices import DeviceSelection
 from ptp.translate import (
     TranslationService,
     _clean_translation,
+    _is_local_url,
     _protect,
     _restore,
     _segment_is_translatable,
@@ -158,3 +159,10 @@ def test_clean_translation_removes_model_separators():
 
 def test_sanitize_removes_pdf_control_characters():
     assert sanitize_text("Sato\x01, Iida") == "Sato, Iida"
+
+
+def test_loopback_urls_bypass_system_proxies():
+    assert _is_local_url("http://127.0.0.1:8080/health")
+    assert _is_local_url("http://localhost:8080/v1/chat/completions")
+    assert _is_local_url("http://[::1]:8080/health")
+    assert not _is_local_url("https://example.com/v1/chat/completions")

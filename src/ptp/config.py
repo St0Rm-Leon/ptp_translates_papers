@@ -29,6 +29,7 @@ class MineruConfig:
     python: Path | None = None
     model_source: MineruModelSource = "auto"
     model_dir: Path | None = None
+    home: Path | None = None
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -36,6 +37,7 @@ class MineruConfig:
 class TranslationConfig:
     model: Path = Path("models/Hy-MT2-1.8B-Q4_K_M.gguf")
     server_bin: str = "llama-server"
+    llama_cli: str = "llama-cli"
     server_url: str | None = None
     host: str = "127.0.0.1"
     port: int = 0
@@ -58,6 +60,10 @@ class RenderConfig:
     layout: RenderLayout = "single"
     engine: RenderEngine = "xelatex"
     cjk_font: str = "Noto Serif CJK SC"
+    cjk_font_file: Path | None = None
+    cjk_font_bold_file: Path | None = None
+    pandoc: str | None = None
+    xelatex: str | None = None
     template: Path | None = None
     source_ratio: float = 0.48
     source_line_spacing: float = 1.35
@@ -81,6 +87,13 @@ class Config:
     translation: TranslationConfig = field(default_factory=TranslationConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
     config_path: Path | None = None
+
+    @property
+    def base_dir(self) -> Path:
+        """Directory used to resolve relative paths from config.yaml."""
+        if self.config_path is not None:
+            return self.config_path.parent
+        return Path.cwd()
 
     def with_cli_overrides(self, args: Any) -> Config:
         """Return a copy with explicitly provided command-line values applied."""
@@ -175,6 +188,17 @@ def _optional_runtime_path(value: Any, base: Path) -> Path | None:
     return path if path.is_absolute() else (base / path)
 
 
+def _tool_value(value: Any, base: Path, where: str) -> str | None:
+    """Resolve a configured executable path while keeping bare names on PATH."""
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value)
+    candidate = Path(text).expanduser()
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        return str(candidate if candidate.is_absolute() else (base / candidate).resolve())
+    return text
+
+
 def _int_or_auto(value: Any, where: str) -> int | str:
     if value == "auto" or value is None:
         return "auto"
@@ -222,6 +246,7 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
             "python",
             "model_source",
             "model_dir",
+            "home",
             "extra_args",
         },
         "mineru",
@@ -232,6 +257,7 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
         {
             "model",
             "server_bin",
+            "llama_cli",
             "server_url",
             "host",
             "port",
@@ -257,6 +283,10 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
             "layout",
             "engine",
             "cjk_font",
+            "cjk_font_file",
+            "cjk_font_bold_file",
+            "pandoc",
+            "xelatex",
             "template",
             "source_ratio",
             "source_line_spacing",
@@ -275,6 +305,7 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
         python=_optional_runtime_path(raw_mineru.get("python"), base),
         model_source=raw_mineru.get("model_source", "auto"),
         model_dir=_optional_path(raw_mineru.get("model_dir"), base),
+        home=_optional_path(raw_mineru.get("home"), base),
         extra_args=[str(v) for v in raw_mineru.get("extra_args", [])],
     )
     translation = TranslationConfig(
@@ -283,7 +314,14 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
             base,
             "translation.model",
         ),
-        server_bin=str(raw_translation.get("server_bin", "llama-server")),
+        server_bin=_tool_value(
+            raw_translation.get("server_bin", "llama-server"), base, "translation.server_bin"
+        )
+        or "llama-server",
+        llama_cli=_tool_value(
+            raw_translation.get("llama_cli", "llama-cli"), base, "translation.llama_cli"
+        )
+        or "llama-cli",
         server_url=raw_translation.get("server_url") or None,
         host=str(raw_translation.get("host", "127.0.0.1")),
         port=int(raw_translation.get("port", 0)),
@@ -308,6 +346,10 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
         layout=raw_render.get("layout", "single"),
         engine=raw_render.get("engine", "xelatex"),
         cjk_font=str(raw_render.get("cjk_font", "Noto Serif CJK SC")),
+        cjk_font_file=_optional_path(raw_render.get("cjk_font_file"), base),
+        cjk_font_bold_file=_optional_path(raw_render.get("cjk_font_bold_file"), base),
+        pandoc=_tool_value(raw_render.get("pandoc"), base, "render.pandoc"),
+        xelatex=_tool_value(raw_render.get("xelatex"), base, "render.xelatex"),
         template=_optional_path(raw_render.get("template"), base),
         source_ratio=float(raw_render.get("source_ratio", 0.48)),
         source_line_spacing=float(raw_render.get("source_line_spacing", 1.35)),

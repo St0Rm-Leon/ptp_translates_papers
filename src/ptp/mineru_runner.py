@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+import shutil
 import subprocess
 import sys
-import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pypdfium2 as pdfium
+import yaml
 
+from .compat import WINDOWS, resolve_tool, utf8_env
 from .config import Config
-from .devices import DeviceSelection, mineru_env_vars, mineru_environment
+from .devices import DeviceSelection, mineru_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -72,39 +74,6 @@ def resolve_tier(config: Config, selection: DeviceSelection, stats: TextLayerSta
     return "standard"
 
 
-def parse_pdf(
-    pdf_path: Path,
-    work_dir: Path,
-    config: Config,
-    selection: DeviceSelection,
-    tier: str,
-) -> MineruArtifacts:
-    """Run MinerU in-process (development/fallback path)."""
-    from .mineru_worker import run_parse
-
-    logger.info("MinerU tier=%s device=%s", tier, selection.mode)
-    started = time.perf_counter()
-    with mineru_environment(config, selection):
-        mineru_dir = run_parse(
-            pdf_path,
-            work_dir,
-            tier,
-            image_analysis=config.mineru.image_analysis,
-        )
-    logger.info("MinerU finished in %.1fs", time.perf_counter() - started)
-
-    markdown_path = mineru_dir / "markdown.md"
-    structured_path = mineru_dir / "structured_content.json"
-    images_dir = mineru_dir / "images"
-    return MineruArtifacts(
-        directory=mineru_dir,
-        markdown_path=markdown_path,
-        structured_content_path=structured_path,
-        images_dir=images_dir,
-        tier=tier,
-    )
-
-
 def _resolve_mineru_python(path: Path | None) -> Path:
     """Resolve a configured interpreter or a virtualenv directory."""
     if path is None:
@@ -124,26 +93,78 @@ def _resolve_mineru_python(path: Path | None) -> Path:
     return candidate
 
 
-_MINERU_CHECKED: set[str] = set()
+def _resolve_mineru_cli(python: Path) -> Path | None:
+    """Locate the MinerU CLI next to the configured interpreter."""
+    candidate = python.parent / ("mineru-kit.exe" if WINDOWS else "mineru-kit")
+    if candidate.exists():
+        return candidate
+    fallback = resolve_tool("mineru-kit")
+    return Path(fallback) if fallback else None
 
 
-def _ensure_mineru_available(python: Path) -> None:
-    key = str(python)
-    if key in _MINERU_CHECKED:
-        return
-    proc = subprocess.run(
-        [str(python), "-c", "import mineru"],
-        check=False,
-        capture_output=True,
-        text=True,
+def _safe_extract_zip(zip_path: Path, destination: Path) -> None:
+    """Extract a MinerU result ZIP while rejecting path traversal."""
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            target = (root / member.filename).resolve()
+            if target != root and root not in target.parents:
+                raise RuntimeError(f"unsafe ZIP member in MinerU result: {member.filename}")
+        archive.extractall(root)
+
+
+def _mineru_command(
+    cli: Path, pdf_path: Path, zip_path: Path, tier: str, image_analysis: bool
+) -> list[str]:
+    command = [
+        str(cli),
+        "parse",
+        str(pdf_path),
+        "-o",
+        str(zip_path),
+        "--format",
+        "zip",
+        "--tier",
+        tier,
+        "--pages",
+        "all",
+    ]
+    if not image_analysis:
+        command.append("--disable-image-analysis")
+    return command
+
+
+def _write_mineru_config(
+    config: Config, selection: DeviceSelection, work_dir: Path
+) -> Path | None:
+    """Write an absolute, per-run MinerU config for portable Windows layouts.
+
+    MinerU's home config may contain build-machine paths after a portable
+    package is moved.  Pointing ``MINERU_CONFIG`` at a generated file keeps
+    ``model.base_dir`` correct no matter where the package is extracted.
+    """
+    if not WINDOWS:
+        return None
+
+    model: dict[str, object] = {"small_backend": "onnx", "vlm": {"engine": "llama-cpp"}}
+    if config.mineru.model_source:
+        model["source"] = config.mineru.model_source
+    if config.mineru.model_dir is not None:
+        model["base_dir"] = str(config.mineru.model_dir)
+    if config.mineru.device == "gpu" or (
+        config.mineru.device != "cpu" and selection.mode == "gpu"
+    ):
+        model["onnx_device"] = "gpu"
+    else:
+        model["onnx_device"] = "cpu"
+
+    path = work_dir / "mineru-config.yaml"
+    path.write_text(
+        yaml.safe_dump({"model": model}, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
     )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"MinerU is not installed in {python}. "
-            "Run `ptp-install-mineru --accept-license` for an isolated install, "
-            "or `uv sync --extra mineru` for the development environment."
-        )
-    _MINERU_CHECKED.add(key)
+    return path
 
 
 def parse_pdf_subprocess(
@@ -153,38 +174,49 @@ def parse_pdf_subprocess(
     selection: DeviceSelection,
     tier: str,
 ) -> MineruArtifacts:
-    """Run MinerU in a child process so its GPU memory is released afterwards."""
+    """Run MinerU through its independent CLI process.
+
+    PTP only passes paths and environment variables to ``mineru-kit`` and reads
+    the resulting ZIP.  No PTP/GPL code is imported into the MinerU process.
+    """
     python = _resolve_mineru_python(config.mineru.python)
-    _ensure_mineru_available(python)
-    worker = Path(__file__).with_name("mineru_worker.py").resolve()
-    cmd = [
-        str(python),
-        str(worker),
-        "--pdf",
-        str(pdf_path),
-        "--work-dir",
-        str(work_dir),
-        "--tier",
-        tier,
-    ]
-    if config.mineru.image_analysis:
-        cmd.append("--image-analysis")
-    env = os.environ.copy()
+    cli = _resolve_mineru_cli(python)
+    if cli is None:
+        raise RuntimeError(
+            f"MinerU CLI not found next to {python}. "
+            "Run `ptp-install-mineru --accept-license` or install the mineru component."
+        )
+
+    mineru_dir = work_dir / "mineru"
+    if mineru_dir.exists():
+        shutil.rmtree(mineru_dir, ignore_errors=True)
+    zip_path = work_dir / "mineru.zip"
+    zip_path.unlink(missing_ok=True)
+    cmd = _mineru_command(cli, pdf_path, zip_path, tier, config.mineru.image_analysis)
+
+    env = utf8_env()
     env.update(mineru_env_vars(config, selection))
+    mineru_config = _write_mineru_config(config, selection, work_dir)
+    if mineru_config is not None:
+        env["MINERU_CONFIG"] = str(mineru_config)
     logger.info(
-        "MinerU child process: tier=%s device=%s python=%s",
+        "MinerU CLI process: tier=%s device=%s cli=%s",
         tier,
         selection.mode,
-        python,
+        cli,
     )
     proc = subprocess.run(cmd, check=False, env=env)
     if proc.returncode != 0:
-        raise RuntimeError(f"MinerU child process failed with exit code {proc.returncode}")
-    mineru_dir = work_dir / "mineru"
+        raise RuntimeError(f"MinerU CLI process failed with exit code {proc.returncode}")
+    if not zip_path.exists():
+        raise RuntimeError("MinerU CLI did not produce a result ZIP")
+
+    _safe_extract_zip(zip_path, mineru_dir)
     markdown_path = mineru_dir / "markdown.md"
     structured_path = mineru_dir / "structured_content.json"
     if not markdown_path.exists() or not structured_path.exists():
-        raise RuntimeError("MinerU child process did not produce expected artifacts")
+        raise RuntimeError("MinerU result ZIP is missing markdown.md or structured_content.json")
+    zip_path.unlink(missing_ok=True)
     return MineruArtifacts(
         directory=mineru_dir,
         markdown_path=markdown_path,

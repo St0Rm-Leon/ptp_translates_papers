@@ -100,12 +100,36 @@ sudo pacman -S --needed texlive-xetex texlive-latexrecommended \
 sudo pacman -S --needed vulkan-radeon vulkan-tools ggml-vulkan
 ```
 
+Windows（PowerShell，示例）：
+
+```powershell
+# Python 3.13 + uv
+winget install --id astral-sh.uv -e
+
+# Pandoc、TeX（MiKTeX 或 TeX Live）
+winget install --id JohnMacFarlane.Pandoc -e
+winget install --id MiKTeX.MiKTeX -e
+
+# llama.cpp：下载 Windows Vulkan 发布包，解压到任意目录。
+# 然后在 config.yaml 设置：
+# translation:
+#   server_bin: C:/tools/llama/llama-server.exe
+#   llama_cli: C:/tools/llama/llama-cli.exe
+
+uv sync
+uv run ptp --doctor
+```
+
 说明：
 
 - `pandoc-cli` 提供 `pandoc`；Arch 没有名为 `pandoc` 的包。
 - XeLaTeX 需要 `texlive-langchinese` 提供 `ctexhook.sty`；只装 `texlive-langcjk` 不够。
 - Tectonic 默认 bundle 约 2.62 GB，v1 实际使用 XeLaTeX。
 - Vulkan 包是可选的；没有 GPU 时可用 `--device cpu`。
+- Windows 需要同时提供 `llama-server.exe` 和 `llama-cli.exe`；设备探测使用后者。可在 `config.yaml` 用相对/绝对路径指定，不必加入 PATH。
+- Windows 默认没有 Noto CJK 字体。可安装 Noto，或用 `render.cjk_font_file` 指向随程序分发的 `.otf` 文件。
+- Windows 下先运行 `uv run ptp --doctor`，检查 Pandoc、XeLaTeX、llama.cpp、MinerU、字体、模型和输出目录。
+- 不需要配置 Python/TeX/llama.cpp 的离线便携包见 [Windows 便携版](windows.md)；构建脚本见 `scripts/windows/`。
 
 Python 环境和模型：
 
@@ -123,6 +147,12 @@ uv run ptp --download-model
 ```
 
 方式 B 会把 MinerU 安装到独立目录，并打印 `mineru.python` 配置。MinerU 仍按其自身许可证分发，不进入 PTP 的 GPL 代码范围。`--download-model` 会把 `Hy-MT2-1.8B-Q4_K_M.gguf`（约 1.1 GB）下载到 `models/`。MinerU 首次运行还会下载自己的 OCR/VLM/表格模型，缓存在 `~/.mineru/models/`。
+
+离线安装 MinerU 时，先用 `pip download` 准备好 Windows wheel，再执行：
+
+```bash
+uv run ptp-install-mineru --accept-license --wheelhouse wheels/
+```
 
 快速运行：
 
@@ -158,7 +188,7 @@ CLI 显式参数 > config.yaml > 内置默认值
 - 配置里未知的键会报错，避免拼写错误被忽略。
 - `version` 目前只支持 `1`。
 
-当前还没有 Windows 双击打包；`ptp.exe` 是未来产物名。现在 Linux 下直接使用 `uv run ptp` 或 `ptp`。双击启动时从程序目录读取 `config.yaml` 的行为属于后续打包工作。
+Windows 现在可以直接用 `uv run ptp` 或安装后的 `ptp` 运行，已处理 UTF-8 子进程、`Scripts/python.exe`、`.exe` 工具路径和启动器字体路径。便携双击版 `ptp.exe` 仍属于后续打包工作；届时启动器应把工作目录切到程序目录，以便读取同目录的 `config.yaml`。
 
 ## 4. 完整配置示例
 
@@ -200,12 +230,16 @@ mineru:
   model_source: auto
   # MinerU 模型根目录；null = ~/.mineru/models
   model_dir: null
+  # MINERU_HOME；便携包可指向 data/mineru-home
+  home: null
 
 translation:
   # 本地 GGUF 路径；相对 config.yaml
   model: models/Hy-MT2-1.8B-Q4_K_M.gguf
-  # llama.cpp server 可执行文件
+  # llama.cpp server 可执行文件；可写绝对路径或相对 config.yaml 的路径
   server_bin: llama-server
+  # 设备探测用 llama-cli；Windows 便携包通常与 server 同目录
+  llama_cli: llama-cli
   # 使用已运行的 server 时填写，例如 http://127.0.0.1:8080
   server_url: null
   host: 127.0.0.1
@@ -228,6 +262,12 @@ render:
   # xelatex | lualatex | tectonic | typst
   engine: xelatex
   cjk_font: Noto Serif CJK SC
+  # 可选：直接指定字体文件，适合 Windows/便携包，无需安装系统字体
+  cjk_font_file: null
+  cjk_font_bold_file: null
+  # 可选：指定 pandoc/xelatex 可执行文件；null = 从 PATH 查找
+  pandoc: null
+  xelatex: null
   # 预留：后续自定义版式模板
   template: null
   # bilingual 专用：左栏比例、左右行距、图表最大高度
@@ -283,6 +323,7 @@ render:
 | `python` | `null` | 独立 MinerU venv 的 Python；`null` 使用 PTP 的 Python |
 | `model_source` | `auto` | `auto` / `huggingface` / `modelscope` / `local` |
 | `model_dir` | `null` | MinerU 模型根目录；`null` 使用 `~/.mineru/models` |
+| `home` | `null` | `MINERU_HOME`；便携包建议指向 `data/mineru-home` |
 
 ### tier 怎么选
 
@@ -306,7 +347,8 @@ render:
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `model` | `models/Hy-MT2-1.8B-Q4_K_M.gguf` | 本地 GGUF 路径 |
-| `server_bin` | `llama-server` | llama.cpp server 程序名 |
+| `server_bin` | `llama-server` | llama.cpp server 程序名或 `.exe` 路径 |
+| `llama_cli` | `llama-cli` | 设备探测用 llama.cpp CLI 名称或路径 |
 | `server_url` | `null` | 使用外部 server；设置后不本地启动 |
 | `host` | `127.0.0.1` | 本地 server 监听地址 |
 | `port` | `0` | `0` 表示自动找空闲端口 |
@@ -373,7 +415,11 @@ Vacuum vessel = 真空容器
 |---|---|---|
 | `layout` | `single` | `single` 单栏中文；`bilingual` 左原文右译文 |
 | `engine` | `xelatex` | `xelatex` / `lualatex` / `tectonic` / `typst` |
-| `cjk_font` | `Noto Serif CJK SC` | 中文字体 |
+| `cjk_font` | `Noto Serif CJK SC` | 中文字体族名 |
+| `cjk_font_file` | `null` | 可选字体文件路径；优先于 `cjk_font`，适合 Windows/便携包 |
+| `cjk_font_bold_file` | `null` | 可选粗体字体文件路径 |
+| `pandoc` | `null` | 可选 Pandoc 可执行文件路径；`null` 从 PATH 查找 |
+| `xelatex` | `null` | 可选 XeLaTeX 可执行文件路径；`null` 从 PATH 查找 |
 | `template` | `null` | 预留的自定义版式模板路径 |
 | `source_ratio` | `0.48` | 双语左栏宽度比例 |
 | `source_line_spacing` | `1.35` | 原文行距 |
@@ -382,7 +428,7 @@ Vacuum vessel = 真空容器
 
 - 当前实际验证的是 `xelatex`。
 - `tectonic`/`typst` 虽在 CLI 中可选，但未作为 v1 默认路径验证；Tectonic 首次运行会拉取约 2.62 GB bundle。
-- 中文字体建议保持 Noto CJK；系统已安装 `Noto Serif CJK SC` 和 `Noto Sans CJK SC`。
+- 中文字体建议保持 Noto CJK；Linux 开发机已安装 `Noto Serif CJK SC` 和 `Noto Sans CJK SC`。Windows 默认没有该字体，建议用 `render.cjk_font_file` 指向随包分发的 OTF，或先安装 Noto CJK。
 - `template` 目前只透传给 Pandoc；真正的自定义版式是后续功能。
 
 ### 双语双栏
@@ -510,8 +556,10 @@ uv run ptp --download-model
 | `--layout` | `single` 或 `bilingual` |
 | `--engine` | PDF 引擎 |
 | `--dry-run` | 只打印配置和任务 |
+| `--doctor` | 检查 Pandoc、XeLaTeX、llama.cpp、MinerU、字体、模型和输出目录 |
 | `--log-level` | 日志级别 |
 | `--download-model` | 下载 Q4_K_M |
+| 位置参数 `PDF...` | 与 `-i` 等价，支持把 PDF 拖到 `ptp.exe` 上 |
 
 ## 11. 输出与清理
 
@@ -556,9 +604,47 @@ vulkaninfo --summary
 
 确认 Vulkan/CUDA 后端和驱动；或先用 `--device cpu`。
 
+### Windows 报错 `pandoc not found` / `PDF engine 'xelatex' not found`
+
+先运行：
+
+```powershell
+uv run ptp --doctor
+```
+
+然后用 `render.pandoc`、`render.xelatex` 指定 `.exe` 路径，或把对应目录加入 PATH。
+
+### Windows 报错 `llama.cpp server not found` 或 `llama-cli` 找不到
+
+`llama-server` 和 `llama-cli` 是两个程序。设置：
+
+```yaml
+translation:
+  server_bin: C:/tools/llama/llama-server.exe
+  llama_cli: C:/tools/llama/llama-cli.exe
+```
+
+### Windows 中文乱码或 `UnicodeEncodeError`
+
+PTP 已对子进程强制 UTF-8；若仍出现，检查是否用了旧版本，或在 PowerShell 中设置：
+
+```powershell
+$env:PYTHONUTF8 = "1"
+```
+
+### Windows XeLaTeX 找不到中文字体
+
+Windows 默认没有 `Noto Serif CJK SC`。安装 Noto CJK，或在 `config.yaml` 设置：
+
+```yaml
+render:
+  cjk_font_file: fonts/NotoSerifCJKsc-Regular.otf
+  cjk_font_bold_file: fonts/NotoSerifCJKsc-Bold.otf
+```
+
 ### 翻译很慢
 
-- 确认 `standard` 的 MinerU 已通过子进程运行；不要把 MinerU 和 llama-server 放同一进程。
+- 确认 `standard` 的 MinerU 已通过 `mineru-kit parse` 独立 CLI 进程运行；不要把 MinerU 和 llama-server 放同一进程。
 - 4 GB 显存建议 `parallel: 1`。
 - 检查是否误用了 CPU：`--dry-run` 会打印 `resolved_device`。
 
@@ -606,7 +692,7 @@ sudo pacman -S --needed texlive-latexextra
 - 双语模式保留 HTML 表格的 `rowspan`/`colspan`；单栏模式会展开成近似网格。
 - 长段落跨页时左右栏可能漂移；彻底同步需要句级对齐。
 - 复杂内联标记/公式块丢失占位符时会先分段重译，仍失败才保留原文并记录 warning。
-- Windows 双击打包尚未实现；当前 `ptp.exe` 是未来产物名。
+- Windows 源码运行已支持；便携双击 `ptp.exe` 和离线全内置包仍属于后续发行工作。
 
 ## 14. 相关文档
 

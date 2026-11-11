@@ -16,10 +16,12 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from bs4 import BeautifulSoup, NavigableString
 
+from .compat import hidden_window_flags, resolve_tool, utf8_env
 from .config import Config
 from .devices import DeviceSelection, select_device
 
@@ -39,6 +41,20 @@ _PROSE_HINT = re.compile(
     r"\b(?:the|of|and|in|is|are|was|were|for|with|to|a|an|this|that|we|it|as|by|on|from)\b",
     re.IGNORECASE,
 )
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_LOCAL_OPENER = build_opener(ProxyHandler({}))
+
+
+def _is_local_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in _LOCAL_HOSTS
+
+
+def _open_url(request: Request | str, timeout: float):
+    """Bypass Windows system proxies for the loopback llama-server."""
+    if _is_local_url(request.full_url if isinstance(request, Request) else request):
+        return _LOCAL_OPENER.open(request, timeout=timeout)
+    return urlopen(request, timeout=timeout)
 
 
 def sanitize_text(text: str) -> str:
@@ -273,6 +289,7 @@ class TranslationService(AbstractContextManager["TranslationService"]):
         )
         self.process: subprocess.Popen[str] | None = None
         self.log_path: Path | None = None
+        self.log_file = None
         self.glossary = _load_glossary(self.translation.glossary)
         self.fallback_counts: dict[str, int] = {
             "placeholder_retries": 0,
@@ -303,10 +320,11 @@ class TranslationService(AbstractContextManager["TranslationService"]):
                 f"translation model not found: {model}\n"
                 "Download it with `ptp --download-model` or set translation.model in config.yaml."
             )
-        executable = shutil.which(self.translation.server_bin)
+        executable = resolve_tool(self.translation.server_bin)
         if executable is None:
             raise TranslationError(
-                f"llama.cpp server not found: {self.translation.server_bin!r}; install llama-cpp"
+                f"llama.cpp server not found: {self.translation.server_bin!r}; "
+                "install llama.cpp or set translation.server_bin to llama-server.exe"
             )
         port = self.translation.port or _free_port()
         self.base_url = f"http://{self.translation.host}:{port}"
@@ -342,13 +360,24 @@ class TranslationService(AbstractContextManager["TranslationService"]):
         os.close(fd)
         self.log_path = Path(log_name)
         log_file = self.log_path.open("w", encoding="utf-8")
+        self.log_file = log_file
         logger.info("starting translation server on %s (%s)", self.base_url, self.selection.reason)
-        self.process = subprocess.Popen(
-            cmd,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=utf8_env(),
+                creationflags=hidden_window_flags(),
+            )
+        except OSError as exc:
+            log_file.close()
+            self.log_file = None
+            raise TranslationError(
+                f"could not start {executable!r}: {exc}; check llama.cpp DLLs "
+                "and the Visual C++ runtime"
+            ) from exc
         try:
             self._wait_ready()
         except Exception:
@@ -364,7 +393,7 @@ class TranslationService(AbstractContextManager["TranslationService"]):
                     "translation server exited during startup:\n" + self._log_tail()
                 )
             try:
-                with urlopen(health, timeout=2) as response:
+                with _open_url(health, timeout=2) as response:
                     if response.status == 200:
                         return
             except (URLError, OSError):
@@ -375,19 +404,33 @@ class TranslationService(AbstractContextManager["TranslationService"]):
     def _log_tail(self, lines: int = 30) -> str:
         if self.log_path is None or not self.log_path.exists():
             return "(no server log)"
-        content = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        try:
+            content = self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            return f"(server log unavailable: {exc})"
         return "\n".join(content[-lines:])
 
     def close(self) -> None:
-        if self.process is None:
-            return
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=5)
-        self.process = None
+        if self.process is not None:
+            try:
+                self.process.terminate()
+            except OSError:
+                pass
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+                except OSError:
+                    pass
+            self.process = None
+        if self.log_file is not None:
+            try:
+                self.log_file.close()
+            except OSError:
+                pass
+            self.log_file = None
 
     def complete(self, prompt: str, *, temperature: float | None = None) -> str:
         payload = {
@@ -407,7 +450,7 @@ class TranslationService(AbstractContextManager["TranslationService"]):
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.translation.timeout) as response:
+            with _open_url(request, timeout=self.translation.timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except (URLError, OSError, json.JSONDecodeError) as exc:
             raise TranslationError(f"translation request failed: {exc}") from exc

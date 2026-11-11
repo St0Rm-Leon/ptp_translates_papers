@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import sys
 
 from . import __version__
+from .compat import (
+    configure_stdio,
+    resolve_tool,
+    subprocess_text_options,
+    utf8_env,
+)
 from .config import Config, ConfigError, load_config
 from .devices import DeviceError, select_device
+from .mineru_runner import _resolve_mineru_cli, _resolve_mineru_python
 from .pipeline import PipelineError, resolve_inputs, run_pipeline
 from .render import RenderError
 from .translate import TranslationError, download_default_model
@@ -22,6 +30,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="PTP Translates Papers — a local PDF paper translation pipeline.",
     )
     parser.add_argument("-i", "--input", nargs="+", metavar="PDF", help="input PDF(s) or directory")
+    parser.add_argument(
+        "files",
+        nargs="*",
+        metavar="PDF",
+        help="input PDF(s), allowing drag-and-drop onto ptp.exe",
+    )
     parser.add_argument("-o", "--output", metavar="DIR", help="output root directory")
     parser.add_argument("--config", metavar="FILE", help="config.yaml path")
     parser.add_argument(
@@ -32,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mineru-python",
         metavar="PATH",
-        help="Python executable/venv for the isolated MinerU worker",
+        help="Python executable/venv for the isolated MinerU CLI runtime",
     )
     parser.add_argument(
         "--mineru-model-source",
@@ -84,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="print resolved work without running"
     )
     parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="check installed tools, fonts, models and writable directories",
+    )
+    parser.add_argument(
         "--download-model", action="store_true", help="download the default Q4_K_M GGUF and exit"
     )
     parser.add_argument("--model", metavar="FILE", help="translation GGUF path")
@@ -128,16 +147,101 @@ def _print_config(config: Config) -> None:
     print(f"parallel:   {config.parallel}")
 
 
+def _doctor(config: Config) -> int:
+    """Check the external tools a Windows/source install depends on."""
+    failures = 0
+
+    def report(name: str, ok: bool, detail: str) -> None:
+        nonlocal failures
+        if not ok:
+            failures += 1
+        print(f"{'OK' if ok else 'MISSING':<8} {name}: {detail}")
+
+    pandoc = resolve_tool(config.render.pandoc or "pandoc")
+    report("pandoc", pandoc is not None, pandoc or "not found; set render.pandoc")
+
+    engine = config.render.engine
+    engine_bin = config.render.xelatex if engine == "xelatex" else None
+    engine_path = resolve_tool(engine_bin or engine)
+    report(engine, engine_path is not None, engine_path or "not found; install TeX Live/MiKTeX")
+
+    server = resolve_tool(config.translation.server_bin)
+    report(
+        "llama-server",
+        server is not None,
+        server or "not found; set translation.server_bin",
+    )
+    cli = resolve_tool(config.translation.llama_cli)
+    report("llama-cli", cli is not None, cli or "not found; set translation.llama_cli")
+
+    report(
+        "translation model",
+        config.translation.model.exists(),
+        str(config.translation.model),
+    )
+
+    try:
+        mineru_python = _resolve_mineru_python(config.mineru.python)
+        proc = subprocess.run(
+            [str(mineru_python), "-c", "import mineru"],
+            check=False,
+            capture_output=True,
+            env=utf8_env(),
+            **subprocess_text_options(),
+        )
+        detail = str(mineru_python)
+        if proc.returncode != 0:
+            detail += "; " + (proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "import failed")
+        report("MinerU", proc.returncode == 0, detail)
+
+        mineru_cli = _resolve_mineru_cli(mineru_python)
+        report(
+            "mineru-kit",
+            mineru_cli is not None,
+            str(mineru_cli) if mineru_cli else "not found; run install-mineru.cmd",
+        )
+    except RuntimeError as exc:
+        report("MinerU", False, str(exc))
+
+    if config.render.cjk_font_file is not None:
+        report(
+            "CJK font file",
+            config.render.cjk_font_file.exists(),
+            str(config.render.cjk_font_file),
+        )
+    else:
+        report(
+            "CJK font family",
+            True,
+            f"{config.render.cjk_font} (install the font on Windows or use cjk_font_file)",
+        )
+
+    try:
+        config.output.mkdir(parents=True, exist_ok=True)
+        probe = config.output / ".ptp-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        report("output directory", True, str(config.output))
+    except OSError as exc:
+        report("output directory", False, str(exc))
+
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    configure_stdio()
     args = build_parser().parse_args(argv)
     _configure_logging(args.log_level)
     try:
         config = load_config(args.config).with_cli_overrides(args)
+        if args.doctor:
+            return _doctor(config)
         if args.download_model:
             path = download_default_model(config)
             print(f"model: {path}")
             return 0
-        inputs = resolve_inputs(config, args.input)
+        cli_inputs = list(args.input or []) + list(args.files or [])
+        inputs = resolve_inputs(config, cli_inputs or None)
         if args.dry_run:
             _print_config(config)
             selection = select_device(config)

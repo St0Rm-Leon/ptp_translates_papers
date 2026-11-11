@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "platform": "windows-x64",
+  "core": {
+    "version": "0.1.0",
+    "python": "3.13.14"
+  },
+  "hy_model": {
+    "repo": "tencent/Hy-MT2-1.8B-GGUF",
+    "filename": "Hy-MT2-1.8B-Q4_K_M.gguf",
+    "revision": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+    "sha256": "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699",
+    "size": 1133080448
+  },
+  "mineru": {
+    "version": "4.1.7",
+    "tier": "standard",
+    "small_backend": "onnx",
+    "vlm_engine": "llama-cpp",
+    "models": {
+      "MinerU-4_models_onnx": "358310b4f64b95f9fefc372ad899356e4111f376",
+      "MinerU2.5-Pro-2605-1.2B-GGUF": "9185688a0495e1577d521a757c7c0b62dd38ca48"
+    }
+  }
+}

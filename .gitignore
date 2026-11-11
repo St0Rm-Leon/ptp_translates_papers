@@ -7,3 +7,5 @@ dist/
 build/
 outputs/
 models/
+config.yaml
+config.*.local.yaml

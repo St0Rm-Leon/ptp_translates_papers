@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_MINERU_SPEC = "mineru>=4.1,<5"
+import yaml
+
+from .compat import format_command, utf8_env
+
+# MinerU 4.2 has not been validated with this pipeline; keep the tested 4.1 series.
+DEFAULT_MINERU_SPEC = "mineru>=4.1,<4.2"
 MINERU_LICENSE_URL = "https://github.com/opendatalab/MinerU/blob/master/LICENSE.md"
 
 
@@ -56,15 +60,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="acknowledge the MinerU license before downloading it",
     )
     parser.add_argument("--upgrade", action="store_true", help="upgrade an existing install")
+    parser.add_argument(
+        "--wheelhouse",
+        type=Path,
+        help="offline wheel directory; installs with --no-index --find-links",
+    )
+    parser.add_argument(
+        "--no-index",
+        action="store_true",
+        help="do not query package indexes (use with a preconfigured find-links)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print commands without running")
     return parser
 
 
 def _run(command: list[str], *, dry_run: bool) -> None:
-    print("+ " + shlex.join(command))
+    print("+ " + format_command(command))
     if dry_run:
         return
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, env=utf8_env())
 
 
 def _print_license() -> None:
@@ -82,11 +96,22 @@ def main(argv: list[str] | None = None) -> int:
         print("Re-run with --accept-license after reviewing the license.")
         return 2
 
+    if getattr(sys, "frozen", False) and Path(args.python) == Path(sys.executable):
+        print(
+            "A frozen PTP executable cannot create a virtualenv. "
+            "Pass --python with a real Python 3.11-3.14 interpreter.",
+            file=sys.stderr,
+        )
+        return 1
+
     target = args.target.expanduser().resolve()
     python = venv_python(target)
     base_python = Path(args.python).expanduser().resolve()
     if not base_python.exists():
         print(f"Base Python not found: {base_python}", file=sys.stderr)
+        return 1
+    if args.wheelhouse is not None and not args.wheelhouse.expanduser().exists():
+        print(f"Wheelhouse not found: {args.wheelhouse}", file=sys.stderr)
         return 1
 
     if not args.dry_run:
@@ -94,17 +119,29 @@ def main(argv: list[str] | None = None) -> int:
     if not python.exists():
         _run([str(base_python), "-m", "venv", str(target)], dry_run=args.dry_run)
 
-    _run(
-        [str(python), "-m", "pip", "install", "--upgrade", "pip"],
-        dry_run=args.dry_run,
-    )
+    offline = args.wheelhouse is not None or args.no_index
+    if not offline:
+        _run(
+            [str(python), "-m", "pip", "install", "--upgrade", "pip"],
+            dry_run=args.dry_run,
+        )
     install = [str(python), "-m", "pip", "install"]
     if args.upgrade:
         install.append("--upgrade")
+    if args.wheelhouse is not None:
+        install.extend(
+            ["--no-index", "--find-links", str(args.wheelhouse.expanduser().resolve())]
+        )
+    elif args.no_index:
+        install.append("--no-index")
     install.append(args.mineru_spec)
     _run(install, dry_run=args.dry_run)
 
-    snippet = f"mineru:\n  python: {python}\n  model_source: auto\n"
+    snippet = yaml.safe_dump(
+        {"mineru": {"python": str(python), "model_source": "auto"}},
+        sort_keys=False,
+        allow_unicode=True,
+    )
     print("\nAdd this to config.yaml:\n")
     print(snippet)
     print(

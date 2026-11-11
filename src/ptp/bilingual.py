@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .compat import resolve_tool, subprocess_text_options
 from .config import RenderConfig
 from .markdown_tables import inline_html_to_latex_markdown
 from .translate import TranslationService, split_markdown_blocks
@@ -290,16 +290,16 @@ def _normalize_table(block: str) -> str:
     return block.strip()
 
 
-def _markdown_to_latex(block: str) -> str:
+def _markdown_to_latex(block: str, pandoc: str | None = None) -> str:
     # Noto Serif CJK SC lacks U+2217; use an ASCII asterisk in titles/metadata.
     block = block.replace("\u2217", "*").replace("\u2009", " ")
     block = inline_html_to_latex_markdown(block)
-    pandoc = shutil.which("pandoc")
-    if pandoc is None:
+    executable = resolve_tool(pandoc or "pandoc")
+    if executable is None:
         raise RuntimeError("pandoc is required for bilingual layout")
     proc = subprocess.run(
         [
-            pandoc,
+            executable,
             "-f",
             "markdown+tex_math_dollars+raw_html+pipe_tables",
             "-t",
@@ -308,17 +308,19 @@ def _markdown_to_latex(block: str) -> str:
         ],
         input=block,
         capture_output=True,
-        text=True,
         check=False,
+        **subprocess_text_options(),
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "pandoc block conversion failed")
     return proc.stdout.strip()
 
 
-def _title_latex(source: str, translated: str | None) -> str:
-    source_text = _markdown_to_latex(re.sub(r"^\s*#+\s*", "", source.strip()))
-    translated_text = _markdown_to_latex(re.sub(r"^\s*#+\s*", "", (translated or "").strip()))
+def _title_latex(source: str, translated: str | None, pandoc: str | None = None) -> str:
+    source_text = _markdown_to_latex(re.sub(r"^\s*#+\s*", "", source.strip()), pandoc)
+    translated_text = _markdown_to_latex(
+        re.sub(r"^\s*#+\s*", "", (translated or "").strip()), pandoc
+    )
     lines = [r"\begin{center}", rf"{{\LARGE\bfseries {source_text}}}"]
     if translated_text:
         lines.append(r"\\[0.35em]")
@@ -327,44 +329,50 @@ def _title_latex(source: str, translated: str | None) -> str:
     return "\n".join(lines)
 
 
-def _figure_latex(unit: BilingualUnit, config: RenderConfig) -> str:
+def _figure_latex(
+    unit: BilingualUnit, config: RenderConfig, pandoc: str | None = None
+) -> str:
     path = _image_path(unit.source)
     if not path:
-        return _markdown_to_latex(unit.source)
+        return _markdown_to_latex(unit.source, pandoc)
     lines = [
         r"\begin{center}",
         rf"\includegraphics[width=0.85\fullwidth,height={config.figure_max_height:.2f}\textheight,keepaspectratio]{{{path}}}",
     ]
     if unit.caption:
-        lines.append(rf"\captionof{{figure}}{{{_markdown_to_latex(unit.caption)}}}")
+        lines.append(
+            rf"\captionof{{figure}}{{{_markdown_to_latex(unit.caption, pandoc)}}}"
+        )
     lines.append(r"\end{center}")
     return "\n".join(lines)
 
 
-def _html_table_to_latex(table_html: str) -> str:
-    pandoc = shutil.which("pandoc")
-    if pandoc is None:
+def _html_table_to_latex(table_html: str, pandoc: str | None = None) -> str:
+    executable = resolve_tool(pandoc or "pandoc")
+    if executable is None:
         raise RuntimeError("pandoc is required for bilingual layout")
     proc = subprocess.run(
-        [pandoc, "-f", "html", "-t", "latex", "--wrap=none"],
+        [executable, "-f", "html", "-t", "latex", "--wrap=none"],
         input=table_html,
         capture_output=True,
-        text=True,
         check=False,
+        **subprocess_text_options(),
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "pandoc HTML table conversion failed")
     return proc.stdout.strip()
 
 
-def _table_latex(unit: BilingualUnit) -> str:
+def _table_latex(unit: BilingualUnit, pandoc: str | None = None) -> str:
     if "<table" in unit.source.lower():
-        table_latex = _html_table_to_latex(unit.source)
+        table_latex = _html_table_to_latex(unit.source, pandoc)
     else:
-        table_latex = _markdown_to_latex(unit.source)
+        table_latex = _markdown_to_latex(unit.source, pandoc)
     lines = [r"\begin{center}"]
     if unit.caption:
-        lines.append(rf"\captionof{{table}}{{{_markdown_to_latex(unit.caption)}}}")
+        lines.append(
+            rf"\captionof{{table}}{{{_markdown_to_latex(unit.caption, pandoc)}}}"
+        )
         lines.append(r"\par")
     lines.extend([r"\small", table_latex, r"\end{center}"])
     return "\n".join(lines)
@@ -412,50 +420,64 @@ class _TexBuilder:
         return "\n".join(self.lines).rstrip() + "\n"
 
 
-def _notes_latex(units: list[BilingualUnit]) -> str:
+def _notes_latex(units: list[BilingualUnit], pandoc: str | None = None) -> str:
     lines = [r"\section*{Notes / 注释}", r"{\small"]
     for unit in units:
-        lines.append(_markdown_to_latex(unit.source))
+        lines.append(_markdown_to_latex(unit.source, pandoc))
         lines.append("")
     lines.append("}")
     return "\n".join(lines)
 
 
-def build_bilingual_tex(units: list[BilingualUnit], config: RenderConfig) -> str:
+def build_bilingual_tex(
+    units: list[BilingualUnit], config: RenderConfig, pandoc: str | None = None
+) -> str:
     builder = _TexBuilder(config)
     footnotes = [unit for unit in units if unit.kind == "footnote"]
     for unit in units:
         if unit.kind == "footnote":
             continue
         if unit.kind == "title":
-            builder.add_full_width(_title_latex(unit.source, unit.translated))
+            builder.add_full_width(_title_latex(unit.source, unit.translated, pandoc))
         elif unit.kind in {"metadata", "reference", "equation", "code"}:
-            builder.add_full_width(_markdown_to_latex(unit.source))
+            builder.add_full_width(_markdown_to_latex(unit.source, pandoc))
         elif unit.kind == "figure":
-            builder.add_full_width(_figure_latex(unit, config))
+            builder.add_full_width(_figure_latex(unit, config, pandoc))
         elif unit.kind == "table":
-            builder.add_full_width(_table_latex(unit))
+            builder.add_full_width(_table_latex(unit, pandoc))
         else:
             builder.add_pair(
-                _markdown_to_latex(unit.source),
-                _markdown_to_latex(unit.translated or unit.source),
+                _markdown_to_latex(unit.source, pandoc),
+                _markdown_to_latex(unit.translated or unit.source, pandoc),
             )
     if footnotes:
-        builder.add_full_width(_notes_latex(footnotes))
+        builder.add_full_width(_notes_latex(footnotes, pandoc))
     return builder.result()
 
 
 def bilingual_preamble(config: RenderConfig) -> str:
     ratio = config.source_ratio
-    font = config.cjk_font
+    if config.cjk_font_file is not None:
+        font_dir = config.cjk_font_file.parent.as_posix()
+        if not font_dir.endswith("/"):
+            font_dir += "/"
+        options = [f"Path={{{font_dir}}}"]
+        if config.cjk_font_bold_file is not None:
+            options.append(f"BoldFont={{{config.cjk_font_bold_file.name}}}")
+        option_text = ",".join(options)
+        main_font = rf"\setmainfont[{option_text}]{{{config.cjk_font_file.name}}}"
+        cjk_font = rf"\setCJKmainfont[{option_text}]{{{config.cjk_font_file.name}}}"
+    else:
+        main_font = rf"\setmainfont{{{config.cjk_font}}}"
+        cjk_font = rf"\setCJKmainfont{{{config.cjk_font}}}"
     return "\n".join(
         [
             r"\documentclass[10pt,a4paper]{article}",
             r"\usepackage[a4paper,margin=1.6cm]{geometry}",
             r"\usepackage{fontspec}",
             r"\usepackage{xeCJK}",
-            rf"\setmainfont{{{font}}}",
-            rf"\setCJKmainfont{{{font}}}",
+            main_font,
+            cjk_font,
             r"\usepackage{paracol}",
             r"\usepackage{setspace}",
             r"\usepackage{graphicx}",
@@ -503,20 +525,31 @@ def render_bilingual_pdf(
     output_pdf: Path,
     config: RenderConfig,
     resource_dir: Path,
-    stem: str,
 ) -> None:
     if config.engine != "xelatex":
         raise RuntimeError("bilingual layout currently requires render.engine=xelatex")
+    pandoc = resolve_tool(config.pandoc or "pandoc")
+    if pandoc is None:
+        raise RuntimeError("pandoc is required for bilingual layout")
+    xelatex = resolve_tool(config.xelatex or "xelatex")
+    if xelatex is None:
+        raise RuntimeError(
+            "xelatex not found; install TeX Live/MiKTeX or set render.xelatex"
+        )
     resource_dir = resource_dir.resolve()
     output_pdf = output_pdf.resolve()
-    tex_path = resource_dir / f"{stem}_bilingual.tex"
+    # Use ASCII temporary names so XeLaTeX on Windows is not asked to open a
+    # .tex file whose name comes from an arbitrary (possibly CJK) PDF stem.
+    tex_path = resource_dir / "_ptp_bilingual.tex"
     tex_path.write_text(
-        bilingual_preamble(config) + build_bilingual_tex(units, config) + "\n\\end{document}\n",
+        bilingual_preamble(config)
+        + build_bilingual_tex(units, config, pandoc)
+        + "\n\\end{document}\n",
         encoding="utf-8",
     )
-    pdf_name = f"{stem}_bilingual.pdf"
+    pdf_name = "_ptp_bilingual.pdf"
     cmd = [
-        "xelatex",
+        xelatex,
         "-interaction=nonstopmode",
         "-halt-on-error",
         "-output-directory",
@@ -530,8 +563,8 @@ def render_bilingual_pdf(
             cwd=resource_dir,
             check=False,
             capture_output=True,
-            text=True,
             timeout=600,
+            **subprocess_text_options(),
         )
         if proc.returncode != 0:
             tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-50:])
@@ -539,4 +572,10 @@ def render_bilingual_pdf(
     built_pdf = resource_dir / pdf_name
     if not built_pdf.exists():
         raise RuntimeError("xelatex produced no bilingual PDF")
-    built_pdf.replace(output_pdf)
+    try:
+        built_pdf.replace(output_pdf)
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not move bilingual PDF to {output_pdf}: {exc}; "
+            "close the PDF if it is open in a viewer"
+        ) from exc

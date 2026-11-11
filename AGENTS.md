@@ -8,10 +8,14 @@
 - Verified end-to-end on `inputs/nci195.pdf` with real Hy-MT2 Q4_K_M on NVIDIA NVK Vulkan:
   - `flash`: ~51 s (MinerU 2.1 s, translation 46.6 s, Pandoc 2.0 s).
   - `standard`: ~63–65 s (MinerU ~16 s, translation ~46 s, Pandoc ~2 s); HTML table translated and rendered.
+- Windows source-run compatibility is implemented: UTF-8 subprocess I/O, `Scripts/python.exe`, `.exe` tool paths, bundled font-file loading, loopback proxy bypass, positional (drag-and-drop) inputs, and `--doctor`. `uv run pytest -q` passes on Windows (59 passed, 1 skipped).
+- Windows E2E is verified on Windows 11 x64 + Ryzen 7 9700X + RTX 5060: CPU `flash`/`basic`/`standard`, Vulkan `standard`, bilingual, and all four `inputs/` PDFs (4/6/9/11 pages). Vulkan standard: MinerU ~19.7 s, translation ~21.3 s, XeLaTeX ~2.6 s.
+- Windows portable package is built by `scripts/windows/build_portable.ps1`; it uses two relocatable CPython runtimes (`runtime/ptp`, `runtime/mineru`), a .NET Framework 4.8 `ptp.exe` launcher, Pandoc, TinyTeX, Noto OTF fonts, llama.cpp `b12283` Vulkan+CPU, and bundled models. User files live in root `inputs/` and `outputs/`; `data/` holds internal caches/logs.
+- Component releases: `build_components.ps1` splits a full build into `core` (with an empty MinerU Python runtime), `hy-model`, and `mineru` (runtime+models). `package_components.ps1` creates the three 7z assets. Lite/Model variants use `install-hy.cmd`, `install-mineru.cmd`, `install-all.cmd`; installers support online HF/PyPI, ModelScope, `-Wheelhouse`/`-ModelDir` offline input, SHA256 checks, and MinerU license acceptance.
 - Bilingual two-column layout is implemented (`--layout bilingual`) and was exercised on all four PDFs in `inputs/` (4, 6, 9 and 11 pages).
 - Placeholder failures now retry and then fall back to segment-wise translation; `state.json` records `translation_fallbacks`. In the four-PDF acceptance run, all body pairs in `s41598` and `nci195` had Chinese, and only metadata (ORCID/DOI) remained English.
 - Bilingual layout now moves `page_footnote` blocks to an end-of-document `Notes / 注释` section, merges figure-interrupted continuation paragraphs, and converts `<sup>`/`<sub>` to LaTeX superscript/subscript commands. Long paragraphs spanning pages can still drift between columns; sentence-level alignment is future work.
-- MinerU runs in a child process (`ptp/mineru_worker.py`) so its VLM leaves VRAM before llama-server starts; without this, standard translation falls to ~5 tok/s.
+- MinerU runs through its independent `mineru-kit parse` CLI process so its VLM leaves VRAM before llama-server starts; without this, standard translation falls to ~5 tok/s. PTP does not import MinerU in its own process.
 - `llama-bench` on Vulkan1: pp128 ≈ 1021 t/s, tg64 ≈ 78.7 t/s (asserts-enabled Arch build).
 - v1 excludes original-layout fidelity, 7B, generated image descriptions, and default `advanced` tier.
 - 10 minutes is a soft target, not an SLA.
@@ -21,6 +25,7 @@
 ```bash
 uv sync --extra mineru
 uv run ptp --help
+uv run ptp --doctor
 uv run ptp --dry-run -i inputs/nci195.pdf --device cpu
 uv run ptp --download-model
 uv run ptp -i inputs/nci195.pdf -o outputs
@@ -28,6 +33,10 @@ uv run ptp -i inputs/nci195.pdf -o outputs --layout bilingual
 uv run ptp-install-mineru --accept-license
 uv run pytest -q
 uv run ruff check src tests
+pwsh -File scripts/windows/build_portable.ps1
+pwsh -File scripts/windows/build_components.ps1
+pwsh -File scripts/windows/package_components.ps1
+pwsh -File scripts/windows/verify_portable.ps1
 ```
 
 Use `uv` for everything. The environment is Python 3.13.18; `pip` is not installed.
@@ -38,20 +47,21 @@ The `mineru` package is an optional extra. For development use `uv sync --extra 
 
 - `cli.py` / `config.py`: argparse CLI, YAML defaults, CLI > config > built-ins.
 - `pipeline.py`: per-document stages, state.json, resume, optional document-level threads.
-- `mineru_runner.py`: text-layer coverage, `tier: auto`, MinerU child-process orchestration.
+- `mineru_runner.py`: text-layer coverage, `tier: auto`, `mineru-kit parse` CLI orchestration and ZIP artifact extraction.
 - `install_mineru.py`: create an isolated MinerU venv outside PTP's environment.
 - `translate.py`: chunking, placeholder protection, llama-server lifecycle, GGUF download.
+- `compat.py`: cross-platform UTF-8 subprocess/stdio, tool-path resolution, Windows console/process helpers.
 - `figures.py`: copy/rename figures (`fig1.jpg`…), extract captions, write bilingual `fig_comments.txt`.
 - `render.py`: single-column Pandoc + XeLaTeX and `CJKmainfont`.
 - `bilingual.py`: block pairing, paracol LaTeX generation, full-width figures/tables, direct XeLaTeX compile.
 - `markdown_tables.py`: HTML table → Markdown pipe table; math entity normalization.
 - `devices.py`: `llama-cli --list-devices`, GPU policy, MinerU environment.
-- `mineru_worker.py`: standalone MinerU process (stdlib + MinerU only) to release GPU memory and allow a separate venv.
+- `scripts/windows/`: portable package builder, C# `ptp.exe` launcher, archive/verification scripts.
 
 ## Non-obvious rules
 
 - `-o` is an output root directory, not a PDF path. Single PDF: `outputs/<stem>_zh/<stem>_zh.pdf`; bilingual PDF: `outputs/<stem>_zh/<stem>_bilingual.pdf`.
-- MinerU is an optional dependency (`--extra mineru`) and can run from an isolated venv configured via `mineru.python`. It remains a separate program under the MinerU Open Source License; do not import it into PTP's main process.
+- MinerU is an optional dependency (`--extra mineru`) and can run from an isolated venv configured via `mineru.python`. It remains a separate program under the MinerU Open Source License; do not import it into PTP's main process. PTP invokes the independent `mineru-kit parse` CLI and reads its result ZIP.
 - `render.layout: single|bilingual`; bilingual currently requires `render.engine: xelatex` and `paracol` from `texlive-latexextra`.
 - In bilingual layout, title is bilingual; body text is paired per paragraph; figures/tables span both columns once; figure/table captions and references stay original; `fig_comments.txt` uses `ZH: [未翻译]`.
 - `--task16` means `--threads 16`; it is not 16 parallel tasks. Use `--parallel N` for document concurrency.
