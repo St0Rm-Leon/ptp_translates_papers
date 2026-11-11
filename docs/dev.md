@@ -32,11 +32,13 @@ src/ptp/
   translate.py        分块、占位符保护、llama-server 生命周期
   figures.py          图片复制/重命名、图注提取、fig_comments.txt
   markdown_tables.py  HTML table → Markdown pipe table、数学实体规范化
-  render.py           Pandoc + XeLaTeX
+  bilingual.py        双语 block 配对、paracol LaTeX、全宽图表
+  render.py           单栏 Pandoc + XeLaTeX
   devices.py          llama.cpp 设备发现、GPU 策略、MinerU 环境变量
 tests/
   test_cli.py
   test_config.py
+  test_bilingual.py
   test_devices.py
   test_figures.py
   test_markdown_tables.py
@@ -63,9 +65,9 @@ config.example.yaml
    - 把 Markdown 的 `images/...` 引用改成 `image/...`；
    - 提取图注，生成 `FigureEntry` 列表。
 8. `TranslationService` 启动 `llama-server`，翻译 Markdown 和图注。
-9. `html_tables_to_markdown()` 把翻译后的 HTML 表格转换成 Markdown pipe table。
-10. `render_pdf()` 调用 Pandoc + XeLaTeX 生成 PDF。
-11. 写入 `state.json`；按 `keep_temp` 决定是否删除 `temp/`。
+9. 单栏模式：`html_tables_to_markdown()` 把翻译后的 HTML 表格转换成 Markdown pipe table，`render_pdf()` 调用 Pandoc + XeLaTeX 生成 `_zh.pdf`。
+10. 双语模式：`bilingual.build_units()` 生成 source/translation block 对，`build_bilingual_tex()` 生成 paracol LaTeX，`render_bilingual_pdf()` 直接运行 XeLaTeX 生成 `_bilingual.pdf`。
+11. 写入 `state.json`（含 `layout`）；按 `keep_temp` 决定是否删除 `temp/`。
 
 ### 3.1 输出结构
 
@@ -144,6 +146,8 @@ CLI 显式参数 > config.yaml > dataclass 默认值
 - `--task16` 等价于 `--threads 16`；`--parallel` 才是文档级并行。
 - `--no-temp` / `--keep-temp` 映射到 `keep_temp` 布尔值。
 - `--cpu-only` / `--gpu-only` 是 `--device cpu/gpu` 的互斥别名。
+- `render.layout` 为 `single` 或 `bilingual`；双语模式使用 `source_ratio`、`source_line_spacing`、`target_line_spacing`、`figure_max_height`。
+- 双语模式输出单独文件 `<stem>_bilingual.pdf`；`state.json.layout` 用于续跑匹配。
 
 ## 5. MinerU 集成
 
@@ -276,17 +280,18 @@ CPU 模式：
 - HTML table 走 HTML 路径；
 - 普通块按 `chunk_tokens` 切分。
 
-`_protect()` 把以下内容替换成 `⟦P0⟧` 形式的占位符：
+`_protect()` 把以下内容替换成 `@@P0@@` 形式的占位符：
 
 - `$$...$$` 和 `$...$`；
 - 图片 `![...](...)`；
 - 链接 `[...](...)`；
 - 行内代码 `` `...` ``；
 - 引用 `[1]` / `[1-3]`；
-- URL；
-- HTML 标签。
+- URL。
 
-模型只看到占位符；恢复阶段检查每个占位符是否仍然存在。丢失占位符会重试一次，仍失败则抛错。输出还会：
+HTML 标签不再整体保护，模型会看到 `<strong>`/`<sub>`/`<sup>` 等标签，以保留内联格式。
+
+模型只看到占位符；恢复阶段检查每个占位符是否仍然存在。丢失占位符会重试一次；仍失败时按受保护片段切分，只翻译普通文本段并原样拼回公式/链接/引用/图片，最终仍失败才保留原文。`TranslationService.fallback_stats()` 记录重试和回退次数，写入 `state.json` 的 `translation_fallbacks`。输出还会：
 
 - 检查是否包含中文（可配置重试）；
 - 去掉模型习惯性添加的首尾 `---`；
@@ -358,6 +363,8 @@ CPU 模式：
 
 ## 9. 渲染
 
+### 9.1 单栏渲染（Pandoc）
+
 `render.render_pdf()` 的核心命令：
 
 ```bash
@@ -371,11 +378,30 @@ pandoc <zh.md> \
 ```
 
 - `render.engine` 支持 `xelatex`、`lualatex`、`tectonic`、`typst`；当前实际验证的是 `xelatex`。
-- XeLaTeX 需要 `texlive-xetex`、`texlive-latexrecommended`、`texlive-fontsrecommended`、`texlive-langchinese`。
+- XeLaTeX 需要 `texlive-xetex`、`texlive-latexrecommended`、`texlive-fontsrecommended`、`texlive-langchinese`；双语模式还需要 `texlive-latexextra`。
 - `texlive-langchinese` 提供 `ctexhook.sty`；只装 `texlive-langcjk` 会在 `CJKmainfont` 时报缺包。
 - Tectonic 默认 bundle 约 2.62 GB，v1 不使用。
 - `render.template` 是未来自定义版式的入口；当前不要求版式一致。
 - `--pdf-engine-opt=-halt-on-error` 只用于 xelatex/lualatex，便于快速暴露错误。
+
+### 9.2 双语双栏渲染（paracol）
+
+`bilingual.py` 不经过 Pandoc 的单栏 PDF 路径，而是：
+
+1. `split_markdown_blocks()` 把 `en.md` 分成 block；
+2. `build_units()` 做段落级配对，图/表/公式/代码/参考文献变成 `full_width` unit；
+3. 每个文本 unit 用 `pandoc -f markdown -t latex` 转为 LaTeX 片段；
+4. 生成完整 `.tex`，用 `xelatex` 编译两次。
+
+关键点：
+
+- 需要 `texlive-latexextra` 的 `paracol`，当前只支持 `render.engine: xelatex`。
+- 每对文本使用 `\begin{paracol}{2}` / `\switchcolumn` / `\switchcolumn[0]*`，`\linespread` 控制左右栏行距。
+- 图表用 `\begin{center}` + `\includegraphics`/`longtable` 全宽输出，前后关闭/重开 `paracol`。
+- HTML 表格保留 `rowspan`/`colspan`，由 Pandoc HTML→LaTeX 生成 `\multirow`/`\multicolumn`。
+- 图注、表注和参考文献不翻译；标题双语，作者/单位区尽量保留原文。
+- `fig_comments.txt` 在双语模式写 `ZH: [未翻译]`。
+- 需要 `hyperref`（ORCID/email）、`amsmath`、`multirow`、`calc`、`\pandocbounded` 等 Pandoc 兼容宏。
 
 ## 10. 开发命令与测试
 
@@ -402,6 +428,9 @@ uv run ruff check src tests
 |---|---:|---:|---:|---:|
 | `flash` | 约 2.1 s | 约 46.6 s | 约 2.0 s | 约 51 s |
 | `standard` | 约 16 s | 约 46 s | 约 2.1 s | 约 64 s |
+| `standard` + bilingual | 约 19 s | 约 32 s | 约 8 s | 约 59 s |
+
+双语模式已用 4 篇 PDF（4/6/9/11 页）验证；大页数论文的翻译和 XeLaTeX 编译时间会线性增加。
 
 `llama-bench`（Vulkan1）：pp128 ≈ 1021 t/s，tg64 ≈ 78.7 t/s。
 
@@ -422,6 +451,14 @@ MinerU 可能输出控制字符。确认 pipeline 已调用 `sanitize_text()`；
 ### Pandoc 报 `Misplaced alignment tab character &`
 
 通常是数学公式里的 HTML 实体 `&lt;` 被送进 LaTeX。确认 `normalize_math_entities()` 在翻译前和渲染前都执行。
+
+### 双语模式报 `Undefined control sequence \pandocbounded`
+
+`bilingual.py` 使用 Pandoc 转换文本块，Pandoc 可能生成 `\pandocbounded`。preamble 必须保留该宏定义；不要删除 `bilingual_preamble()` 里的兼容宏。
+
+### 双语模式报 `Undefined control sequence \href` / `\tightlist`
+
+preamble 需要 `hyperref`，并定义 `\tightlist`。当前 `bilingual_preamble()` 已包含。
 
 ### 翻译很慢（约 5 tok/s）
 
@@ -452,7 +489,7 @@ uv run ptp --download-model
 
 ## 12. 扩展点
 
-- **自定义版式**：`render.template` + 保留的 structured JSON；未来可做 bbox/HTML/CSS/LaTeX 模板渲染。
+- **自定义版式**：双语 `paracol` 已提供第一版；后续可做 bbox/HTML/CSS/LaTeX 模板、单栏/双栏切换和更细的图表布局。
 - **7B 模型**：改 `translation.model`、`context_size` 和显存/内存限制；翻译接口不需要重写。
 - **新翻译后端**：替换 `TranslationService.complete()` 或增加 provider 抽象。
 - **更复杂的表格**：把 HTML table 转换为 LaTeX `tabular`（支持 `\multicolumn`/`\multirow`）而不是 Markdown pipe table。

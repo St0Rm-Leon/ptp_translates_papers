@@ -37,6 +37,11 @@ translation:
   glossary: null
 
 render:
+  layout: single       # single | bilingual
   engine: xelatex
   cjk_font: Noto Serif CJK SC
   template: null       # reserved for future custom layout templates
+  source_ratio: 0.48   # bilingual left-column width
+  source_line_spacing: 1.35
+  target_line_spacing: 1.15
+  figure_max_height: 0.45  # relative to \textheight

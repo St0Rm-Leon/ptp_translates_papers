@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .bilingual import build_units, render_bilingual_pdf
 from .config import Config
 from .devices import DeviceSelection, select_device
 from .figures import FigureEntry, prepare_figures, write_fig_comments
@@ -28,6 +29,19 @@ from .translate import TranslationService, sanitize_text
 logger = logging.getLogger(__name__)
 
 _MINERU_LOCK = threading.Lock()
+
+
+def _output_pdf(config: Config, source: Path) -> Path:
+    suffix = "_bilingual.pdf" if config.render.layout == "bilingual" else "_zh.pdf"
+    return config.output / f"{source.stem}_zh" / f"{source.stem}{suffix}"
+
+
+def _record_translation_stats(state: dict[str, Any], stats: dict[str, int]) -> None:
+    if not any(stats.values()):
+        return
+    state["translation_fallbacks"] = stats
+    active = ", ".join(f"{name}={count}" for name, count in stats.items() if count)
+    logger.info("translation fallbacks: %s", active)
 
 
 @dataclass
@@ -105,7 +119,8 @@ def process_document(
     zh_md = temp_dir / f"{stem}_zh.md"
     content_json = temp_dir / f"{stem}_content_list.json"
     state_path = temp_dir / "state.json"
-    pdf_path = output_dir / f"{stem}_zh.pdf"
+    pdf_path = _output_pdf(config, source)
+    layout = config.render.layout
     result = DocumentResult(source=source, output_dir=output_dir, temp_dir=temp_dir)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +128,12 @@ def process_document(
     image_dir.mkdir(parents=True, exist_ok=True)
 
     state = _load_state(state_path)
-    if config.resume and state.get("status") == "completed" and pdf_path.exists():
+    if (
+        config.resume
+        and state.get("status") == "completed"
+        and state.get("layout") == layout
+        and pdf_path.exists()
+    ):
         logger.info("skip completed: %s", source.name)
         result.pdf = pdf_path
         result.skipped = True
@@ -124,6 +144,7 @@ def process_document(
             "version": 1,
             "source": str(source),
             "stem": stem,
+            "layout": layout,
             "status": "running",
             "device": selection.mode,
         }
@@ -168,6 +189,35 @@ def process_document(
             state["stages"] = {**state.get("stages", {}), "mineru": "completed"}
             _write_state(state_path, state)
 
+        if layout == "bilingual":
+            fig_comments = image_dir / "fig_comments.txt"
+            logger.info("translating bilingual text: %s", source.name)
+            started = time.perf_counter()
+            with TranslationService(config, selection) as service:
+                units = build_units(markdown, service)
+                translation_stats = service.fallback_stats()
+            result.timings["translate"] = time.perf_counter() - started
+            _record_translation_stats(state, translation_stats)
+            for figure in figures:
+                figure.zh_caption = "[未翻译]"
+            write_fig_comments(fig_comments, figures)
+            state["stages"] = {**state.get("stages", {}), "translate": "completed"}
+            _write_state(state_path, state)
+
+            logger.info("rendering bilingual PDF: %s", source.name)
+            started = time.perf_counter()
+            render_bilingual_pdf(units, pdf_path, config.render, temp_dir, stem)
+            result.timings["render"] = time.perf_counter() - started
+            result.pdf = pdf_path
+            state["stages"] = {**state.get("stages", {}), "render": "completed"}
+            state["status"] = "completed"
+            state["timings"] = result.timings
+            _write_state(state_path, state)
+            if not config.keep_temp:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                result.temp_dir = None
+            return result
+
         fig_comments = image_dir / "fig_comments.txt"
         if config.resume and zh_md.exists() and fig_comments.exists():
             logger.info("reuse translation: %s", source.name)
@@ -179,6 +229,8 @@ def process_document(
                 zh_md.write_text(zh_text, encoding="utf-8")
                 for figure in figures:
                     figure.zh_caption = service.translate_caption(figure.en_caption)
+                translation_stats = service.fallback_stats()
+            _record_translation_stats(state, translation_stats)
             write_fig_comments(fig_comments, figures)
             result.timings["translate"] = time.perf_counter() - started
             state["stages"] = {**state.get("stages", {}), "translate": "completed"}
@@ -263,9 +315,14 @@ def run_pipeline(
     for source in inputs:
         output_dir = config.output / f"{source.stem}_zh"
         state_path = output_dir / "temp" / "state.json"
-        pdf_path = output_dir / f"{source.stem}_zh.pdf"
+        pdf_path = _output_pdf(config, source)
         state = _load_state(state_path)
-        if config.resume and state.get("status") == "completed" and pdf_path.exists():
+        if (
+            config.resume
+            and state.get("status") == "completed"
+            and state.get("layout") == config.render.layout
+            and pdf_path.exists()
+        ):
             logger.info("skip completed: %s", source.name)
             results.append(
                 DocumentResult(
@@ -292,7 +349,8 @@ def run_pipeline(
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(process_document, source, config, selection): source for source in pending
+                pool.submit(process_document, source, config, selection): source
+                for source in pending
             }
             for future in as_completed(futures):
                 source = futures[future]

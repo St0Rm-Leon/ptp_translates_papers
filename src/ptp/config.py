@@ -12,6 +12,7 @@ Tier = Literal["auto", "flash", "basic", "standard", "advanced"]
 Device = Literal["auto", "cpu", "gpu"]
 GpuBackend = Literal["auto", "cuda", "vulkan", "metal"]
 RenderEngine = Literal["xelatex", "lualatex", "tectonic", "typst"]
+RenderLayout = Literal["single", "bilingual"]
 
 
 class ConfigError(ValueError):
@@ -50,9 +51,14 @@ class TranslationConfig:
 
 @dataclass
 class RenderConfig:
+    layout: RenderLayout = "single"
     engine: RenderEngine = "xelatex"
     cjk_font: str = "Noto Serif CJK SC"
     template: Path | None = None
+    source_ratio: float = 0.48
+    source_line_spacing: float = 1.35
+    target_line_spacing: float = 1.15
+    figure_max_height: float = 0.45
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -107,6 +113,8 @@ class Config:
         if getattr(args, "server_url", None) is not None:
             translation_changes["server_url"] = args.server_url
         render_changes: dict[str, Any] = {}
+        if getattr(args, "layout", None) is not None:
+            render_changes["layout"] = args.layout
         if getattr(args, "engine", None) is not None:
             render_changes["engine"] = args.engine
         if getattr(args, "cjk_font", None) is not None:
@@ -216,7 +224,21 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
         "translation",
     )
     raw_render = _mapping(data.get("render"), "render")
-    _unknown_keys(raw_render, {"engine", "cjk_font", "template", "extra_args"}, "render")
+    _unknown_keys(
+        raw_render,
+        {
+            "layout",
+            "engine",
+            "cjk_font",
+            "template",
+            "source_ratio",
+            "source_line_spacing",
+            "target_line_spacing",
+            "figure_max_height",
+            "extra_args",
+        },
+        "render",
+    )
 
     mineru = MineruConfig(
         tier=raw_mineru.get("tier", "auto"),
@@ -253,9 +275,14 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
         extra_args=[str(v) for v in raw_translation.get("extra_args", [])],
     )
     render = RenderConfig(
+        layout=raw_render.get("layout", "single"),
         engine=raw_render.get("engine", "xelatex"),
         cjk_font=str(raw_render.get("cjk_font", "Noto Serif CJK SC")),
         template=_optional_path(raw_render.get("template"), base),
+        source_ratio=float(raw_render.get("source_ratio", 0.48)),
+        source_line_spacing=float(raw_render.get("source_line_spacing", 1.35)),
+        target_line_spacing=float(raw_render.get("target_line_spacing", 1.15)),
+        figure_max_height=float(raw_render.get("figure_max_height", 0.45)),
         extra_args=[str(v) for v in raw_render.get("extra_args", [])],
     )
 
@@ -289,6 +316,16 @@ def _validate(config: Config) -> None:
         raise ConfigError("gpu_backend must be auto, cuda, vulkan or metal")
     if config.render.engine not in {"xelatex", "lualatex", "tectonic", "typst"}:
         raise ConfigError("render.engine must be xelatex, lualatex, tectonic or typst")
+    if config.render.layout not in {"single", "bilingual"}:
+        raise ConfigError("render.layout must be single or bilingual")
+    if not 0.2 <= config.render.source_ratio <= 0.8:
+        raise ConfigError("render.source_ratio must be between 0.2 and 0.8")
+    if not 0.8 <= config.render.source_line_spacing <= 2.0:
+        raise ConfigError("render.source_line_spacing must be between 0.8 and 2.0")
+    if not 0.8 <= config.render.target_line_spacing <= 2.0:
+        raise ConfigError("render.target_line_spacing must be between 0.8 and 2.0")
+    if not 0.1 <= config.render.figure_max_height <= 0.9:
+        raise ConfigError("render.figure_max_height must be between 0.1 and 0.9")
     if not 0.0 <= config.mineru.auto_basic_text_coverage <= 1.0:
         raise ConfigError("mineru.auto_basic_text_coverage must be between 0 and 1")
     if not 0.0 <= config.translation.temperature <= 2.0:

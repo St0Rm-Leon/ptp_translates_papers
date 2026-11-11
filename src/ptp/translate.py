@@ -29,15 +29,23 @@ DEFAULT_HF_REPO = "tencent/Hy-MT2-1.8B-GGUF"
 DEFAULT_HF_FILE = "Hy-MT2-1.8B-Q4_K_M.gguf"
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?。！？])\s+")
-_TABLE_SEPARATOR = re.compile(
-    r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
-)
+_TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
+_PLACEHOLDER_TOKEN = "@@P{}@@"
+_PLACEHOLDER_RE = re.compile(r"@@P\d+@@")
+_SEGMENT_MIN_LETTERS = 3
+_MAX_FALLBACK_SEGMENTS = 80
+_PROSE_HINT = re.compile(
+    r"\b(?:the|of|and|in|is|are|was|were|for|with|to|a|an|this|that|we|it|as|by|on|from)\b",
+    re.IGNORECASE,
+)
 
 
 def sanitize_text(text: str) -> str:
     """Remove PDF-extraction control characters that break LaTeX."""
     return _CONTROL_CHARS.sub("", text)
+
+
 _PROTECT_PATTERNS = (
     (re.compile(r"\$\$.*?\$\$", re.DOTALL), "math"),
     (re.compile(r"!\[[^\]]*\]\([^)]+\)"), "image"),
@@ -46,7 +54,6 @@ _PROTECT_PATTERNS = (
     (re.compile(r"\$[^$\n]+\$"), "math"),
     (re.compile(r"\[\d+(?:[-,]\d+)*\]"), "citation"),
     (re.compile(r"https?://\S+"), "url"),
-    (re.compile(r"<[^>\n]+>"), "html"),
 )
 
 
@@ -73,7 +80,7 @@ def _protect(text: str) -> tuple[str, dict[str, str]]:
 
         def repl(match: re.Match[str]) -> str:
             nonlocal counter
-            token = f"⟦P{counter}⟧"
+            token = _PLACEHOLDER_TOKEN.format(counter)
             values[token] = match.group(0)
             counter += 1
             return token
@@ -94,6 +101,45 @@ def _restore(text: str, values: dict[str, str]) -> str:
             f"model dropped {len(missing)} protected placeholder(s): {missing[:5]}"
         )
     return restored
+
+
+def _split_protected(text: str) -> list[tuple[str, bool]]:
+    """Split text into plain and protected pieces using the protection rules."""
+    protected, values = _protect(text)
+    pieces: list[tuple[str, bool]] = []
+    last = 0
+    for match in _PLACEHOLDER_RE.finditer(protected):
+        token = match.group(0)
+        if token not in values:
+            continue
+        if match.start() > last:
+            pieces.append((protected[last : match.start()], False))
+        pieces.append((values[token], True))
+        last = match.end()
+    if last < len(protected):
+        pieces.append((protected[last:], False))
+    return pieces
+
+
+def _segment_is_translatable(text: str) -> bool:
+    """Skip whitespace, punctuation, units and short identifiers."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    letters = re.findall(r"[A-Za-z]", stripped)
+    if len(letters) < _SEGMENT_MIN_LETTERS:
+        return False
+    compact = stripped.strip(".,;:()[]{}")
+    short_unit = (
+        len(letters) <= 5 and re.fullmatch(r"[A-Za-z%°/·.\-]+", compact) is not None
+    )
+    short_identifier = len(compact) <= 12 and re.search(r"\d", compact) is not None
+    return " " in compact or not (short_unit or short_identifier)
+
+
+def _looks_like_prose(text: str) -> bool:
+    """Heuristic for body text, so short labels are not forced into Chinese."""
+    return len(re.findall(r"[A-Za-z]", text)) >= 20 and bool(_PROSE_HINT.search(text))
 
 
 def _clean_translation(text: str) -> str:
@@ -134,6 +180,11 @@ def _split_blocks(text: str) -> list[tuple[str, bool]]:
             current.append(line)
     flush()
     return blocks
+
+
+def split_markdown_blocks(text: str) -> list[str]:
+    """Expose blank-line block splitting for layout-specific renderers."""
+    return [block for block, _translatable in _split_blocks(text)]
 
 
 def _split_long_block(block: str, max_chars: int) -> list[str]:
@@ -199,7 +250,7 @@ def _prompt(text: str, glossary: list[tuple[str, str]]) -> str:
     return (
         "你是学术论文翻译助手。将下面的 Markdown 文本翻译为简体中文。\n"
         "只输出译文，不要解释。保留 Markdown 标记、LaTeX 公式、引用、"
-        "链接、图片和形如 ⟦P0⟧ 的占位符不变。\n"
+        "链接、图片和形如 @@P0@@ 的占位符不变。\n"
         f"{terms}\n---\n{text}"
     )
 
@@ -223,6 +274,14 @@ class TranslationService(AbstractContextManager["TranslationService"]):
         self.process: subprocess.Popen[str] | None = None
         self.log_path: Path | None = None
         self.glossary = _load_glossary(self.translation.glossary)
+        self.fallback_counts: dict[str, int] = {
+            "placeholder_retries": 0,
+            "segment_fallbacks": 0,
+            "segment_untranslated": 0,
+            "no_cjk_fallbacks": 0,
+            "no_cjk_kept": 0,
+        }
+        self.fallback_samples: list[str] = []
 
     def __enter__(self) -> Self:
         if not self.base_url:
@@ -361,25 +420,112 @@ class TranslationService(AbstractContextManager["TranslationService"]):
             raise TranslationError("translation server returned empty content")
         return content
 
+    def _record_fallback(self, kind: str, text: str) -> None:
+        self.fallback_counts[kind] = self.fallback_counts.get(kind, 0) + 1
+        if len(self.fallback_samples) < 10:
+            self.fallback_samples.append(f"{kind}: {text[:80].replace(chr(10), ' ')}")
+
+    def fallback_stats(self) -> dict[str, int]:
+        """Expose per-document fallback counters for state and logging."""
+        return dict(self.fallback_counts)
+
+    def _translate_segments(self, text: str) -> str:
+        """Translate natural-language pieces around protected spans.
+
+        Used only when the model fails to reproduce placeholders. Formula,
+        link, citation and image spans are copied verbatim; only the plain
+        text between them is sent to the model.
+        """
+        self._record_fallback("segment_fallbacks", text)
+        pieces = _split_protected(text)
+        if len(pieces) > _MAX_FALLBACK_SEGMENTS:
+            self._record_fallback("segment_untranslated", text)
+            logger.warning(
+                "segment fallback skipped (%d pieces); keeping source text: %s",
+                len(pieces),
+                text[:80].replace("\n", " "),
+            )
+            return text
+        max_chars = max(400, self.translation.chunk_tokens * 4)
+        output: list[str] = []
+        translated = False
+        for piece, protected in pieces:
+            if protected or not _segment_is_translatable(piece):
+                output.append(piece)
+                continue
+            leading = piece[: len(piece) - len(piece.lstrip())]
+            trailing = piece[len(piece.rstrip()) :]
+            core = piece.strip()
+            parts: list[str] = []
+            try:
+                for chunk in _split_long_block(core, max_chars):
+                    result = self.complete(_prompt(chunk, self.glossary), temperature=0.0)
+                    parts.append(_clean_translation(result))
+            except TranslationError as exc:
+                logger.warning("segment fallback request failed: %s", exc)
+                output.append(piece)
+                continue
+            combined = " ".join(part for part in parts if part)
+            if not _has_cjk(combined) or _PLACEHOLDER_RE.search(combined):
+                output.append(piece)
+                continue
+            output.append(leading + combined + trailing)
+            translated = True
+        if not translated:
+            self._record_fallback("segment_untranslated", text)
+            logger.warning(
+                "segment fallback produced no Chinese; keeping source text: %s",
+                text[:80].replace("\n", " "),
+            )
+            return text
+        return "".join(output)
+
     def translate_text(self, text: str, *, retry_on_missing_cjk: bool = True) -> str:
         text = sanitize_text(text)
         if not text.strip():
             return text
         protected, values = _protect(text)
         # Avoid sending image-only lines, citations, formulas, or URLs to the model.
-        if not re.search(r"[A-Za-z]", re.sub(r"⟦P\d+⟧", "", protected)):
+        if not re.search(r"[A-Za-z]", _PLACEHOLDER_RE.sub("", protected)):
             return text
         result = self.complete(_prompt(protected, self.glossary))
         try:
             restored = _restore(result, values)
         except TranslationError:
+            self._record_fallback("placeholder_retries", text)
             result = self.complete(_prompt(protected, self.glossary), temperature=0.0)
-            restored = _restore(result, values)
+            try:
+                restored = _restore(result, values)
+            except TranslationError:
+                logger.warning(
+                    "translation dropped protected placeholders; retrying in segments: %s",
+                    text[:80].replace("\n", " "),
+                )
+                return self._translate_segments(text)
         if retry_on_missing_cjk and not _has_cjk(restored) and re.search(r"[A-Za-z]", text):
             result = self.complete(_prompt(protected, self.glossary), temperature=0.0)
-            restored = _restore(result, values)
+            try:
+                restored = _restore(result, values)
+            except TranslationError:
+                self._record_fallback("placeholder_retries", text)
+                logger.warning(
+                    "translation dropped protected placeholders; retrying in segments: %s",
+                    text[:80].replace("\n", " "),
+                )
+                return self._translate_segments(text)
             if not _has_cjk(restored):
-                raise TranslationError("translation returned no Chinese characters")
+                if _looks_like_prose(text):
+                    self._record_fallback("no_cjk_fallbacks", text)
+                    translated = self._translate_segments(text)
+                    if translated != text:
+                        return translated
+                else:
+                    self._record_fallback("no_cjk_kept", text)
+                    logger.debug(
+                        "translation returned no Chinese characters; keeping label: %s",
+                        text[:80].replace("\n", " "),
+                    )
+                return text
         return _clean_translation(restored)
 
     def _translate_cell(self, cell: str) -> str:
@@ -434,6 +580,22 @@ class TranslationService(AbstractContextManager["TranslationService"]):
                 continue
             node.replace_with(NavigableString(leading + translated + trailing))
         return str(soup)
+
+    def translate_block(self, block: str) -> str:
+        """Translate one Markdown block for the bilingual layout."""
+        stripped = block.strip()
+        if (
+            not stripped
+            or stripped.startswith(("```", "$$"))
+            or "<table" in stripped.lower()
+            or "<details" in stripped.lower()
+            or _looks_like_markdown_table(block)
+            or re.fullmatch(r"!\[[^\]]*\]\([^)]+\)", stripped)
+        ):
+            return block
+        max_chars = max(400, self.translation.chunk_tokens * 4)
+        pieces = _split_long_block(block, max_chars)
+        return " ".join(self.translate_text(piece) for piece in pieces)
 
     def translate_markdown(self, text: str) -> str:
         max_chars = max(400, self.translation.chunk_tokens * 4)

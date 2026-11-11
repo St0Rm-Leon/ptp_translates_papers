@@ -5,6 +5,7 @@
 - 目标 0（可行性）和目标 1（配置要求）已完成，结论见下文。
 - 核心 Python 包、CLI、MinerU/翻译/Pandoc 管线和单元测试已落地。
 - 已用真实 Hy-MT2 Q4_K_M 在 `nci195.pdf` 上跑通 `flash` 和 `standard` 端到端；`standard` 表格已翻译并渲染。
+- 已实现双语双栏版式，并用 4 篇不同 PDF 做过稳健性测试。
 - v1 的 10 分钟是**软目标**，不是硬性 SLA。
 
 ## 文档
@@ -17,7 +18,7 @@
 - 输入带文本层的英文论文 PDF，主要场景为 4–6 页。
 - MinerU 默认 `standard`；CPU 且文本层完整、无明显扫描页时自动降级到 `basic`。
 - 翻译模型使用 Hy-MT2-1.8B-GGUF **Q4_K_M**；v1 不引入 7B。
-- 输出重排后的中文 PDF；v1 不要求与原 PDF 版式一致，后续通过渲染模板扩展。
+- 输出单栏中文 PDF，或“左原文 / 右译文”的双语双栏 PDF；v1 不要求与原 PDF 版式一致，后续通过渲染模板扩展。
 - `fig_comments.txt` 只提取论文原有图注，不生成图像描述；中英双语。
 - Markdown pipe table 和 HTML table 的单元格会翻译；MinerU `flash` 的 code-fence 表格保留原文。
 - 支持 CPU/GPU 和单文档/多文档并行；GPU 与并行都是可选增强。
@@ -78,7 +79,7 @@
 ### 当前环境
 
 - Arch Linux；系统 Python 3.14.9；`uv` 0.13.7；`pip` 未安装。使用 `uv` 管理环境。
-- Pandoc 3.11 和 XeLaTeX 已安装；`texlive-langchinese` 提供 `ctexhook.sty`，`CJKmainfont` 可用。
+- Pandoc 3.11 和 XeLaTeX 已安装；`texlive-langchinese` 提供 `ctexhook.sty`，`CJKmainfont` 可用；`texlive-latexextra` 提供双语版式所需的 `paracol`。
 - MinerU 4.1.7、llama.cpp（Vulkan 后端）和 Python 依赖已安装；Hy-MT2 Q4_K_M 已下载到 `models/`。
 - 当前 `uv` 环境使用 Python 3.13.18；`uv.lock` 已生成。
 - Noto Sans/Serif CJK SC 已安装（`/usr/share/fonts/noto-cjk/`）。
@@ -126,6 +127,7 @@ Windows 打包后的命令名是 `ptp.exe`；Linux/开发环境使用 `ptp`。
 | `--gpu-index N` | llama.cpp GPU 索引 |
 | `--server-url URL` | 使用已在运行的 llama-server，不自动启动 |
 | `--model FILE` | 指定 GGUF 路径 |
+| `--layout single\|bilingual` | 单栏或双语双栏输出 |
 | `--engine ENGINE` | `xelatex`/`lualatex`/`tectonic`/`typst` |
 | `--threads N` | CPU 线程数 |
 | `--task16` | 等价于 `--threads 16`；不是 16 个并行任务 |
@@ -166,9 +168,14 @@ translation:
   glossary: null
 
 render:
+  layout: single
   engine: xelatex
   cjk_font: Noto Serif CJK SC
   template: null
+  source_ratio: 0.48
+  source_line_spacing: 1.35
+  target_line_spacing: 1.15
+  figure_max_height: 0.45
 ```
 
 说明：
@@ -206,6 +213,7 @@ outputs/
     nci195_zh.pdf
 ```
 
+- 单栏输出为 `nci195_zh.pdf`；`--layout bilingual` 输出为 `nci195_bilingual.pdf`。
 - `temp/` 在成功结束后按 `--no-temp`/`keep_temp` 清理；失败时保留，方便续跑。
 - `nci195_content_list.json` 是 MinerU 的结构化输出，用于图注映射和未来版式功能；`state.json` 记录阶段、耗时、tier/device、可续跑状态。
 - `fig_comments.txt` 格式：
@@ -238,6 +246,7 @@ ZH: 图 2. ...
 
 - 按段落/章节切块，建议 `chunk_tokens <= 1000`，默认 800；不要把整篇 Markdown 一次性送入 1.8B 模型。
 - 保护 Markdown 结构、LaTeX 公式、引用、图片链接和占位符；使用 Hy-MT2 的结构化数据指令模板。
+- 受保护片段使用 ASCII `@@P0@@` 占位符；模型丢失占位符时先重试，再按片段只翻译普通文本，公式/引用/图片原样拼回。
 - 采样参数默认 temperature 0.3、top_p 0.6、top_k 20、repetition_penalty 1.05（模型卡参考值是 0.7；可在 config 中调整并做小范围对比）。
 - 每块校验：目标语言、长度比例、原文直出、重复/漏翻；失败重试一次，仍失败则记录并继续。
 - 可选术语表 `glossary`；v1 不引入 7B。
@@ -251,12 +260,42 @@ ZH: 图 2. ...
 - 当前机器已用 NVIDIA NVK Vulkan 验证 `llama-server` + 真实 Hy-MT2；CUDA 尚未验证。
 - `--parallel` 仍是实验性能力：MinerU 阶段会串行加锁，翻译请求由 llama-server 的 slot 排队；16 GB 内存建议保持 1。
 
+### 双语双栏版式
+
+```bash
+uv run ptp -i inputs/nci195.pdf -o outputs --layout bilingual
+```
+
+或：
+
+```yaml
+render:
+  layout: bilingual
+  source_ratio: 0.48
+  source_line_spacing: 1.35
+  target_line_spacing: 1.15
+  figure_max_height: 0.45
+```
+
+行为：
+
+- 标题全宽双语；正文按段落左原文、右译文。
+- 图片、表格跨双栏，只出现一次；图注、表注保留原文，不翻译。
+- 表格保留原文；HTML 表格会保留 `rowspan`/`colspan` 转成 LaTeX。
+- 参考文献从标题开始保留原文并全宽显示。
+- 输出文件为 `outputs/<stem>_zh/<stem>_bilingual.pdf`，不覆盖单栏 `_zh.pdf`。
+- 双语模式当前要求 `render.engine: xelatex`，并需要 `texlive-latexextra` 提供的 `paracol`。
+- 对齐是段落级：左右栏在段落边界同步；长度差异会产生留白，不逐句对齐。
+- `fig_comments.txt` 在双语模式仍会生成，但 `ZH` 标记为 `[未翻译]`。
+
 ### 已知限制
 
 - 已支持 Markdown pipe table 和 HTML table 的单元格翻译；MinerU `flash` 把表格放进 code fence 时仍按代码块保留，推荐用 `standard` 处理表格。
 - `standard` 的 VLM 可能拆分多 panel 图，图注映射需要实测后调优。
 - GPU 模式下 `--parallel` 自动限制为 1，避免 4 GB 显存争用。
-- `standard` 已实测；复杂表格的 colspan/rowspan 会展开成 Markdown 表格，合并单元格用重复表头/空单元格近似，版式仍有优化空间。
+- 双语模式保留 HTML 表格的 `rowspan`/`colspan`；单栏模式的 Markdown 表格仍会展开成近似网格。
+- 双语的列宽、行距和图表最大高度可配置；不同论文的标题/作者区识别仍需继续实测。
+- 复杂内联标记/公式块如果模型丢失占位符，程序会先按受保护片段切分重译，仍失败才保留原文并记录 warning，而不是生成损坏的 LaTeX。
 
 ## 开发命令
 
@@ -275,13 +314,14 @@ uv run ruff check src tests
 ## 验证与测试
 
 - 快速 fixture：`inputs/nci195.pdf`（4 页）。
-- 压力 fixture：`inputs/Operation_of_a_lithium_beam_diagnostic_in_tritium_.pdf`（6 页，图多）。
+- 压力 fixture：`Operation...`（6 页）、`mfortuna...`（9 页）、`s41598...`（11 页）。
 - 已通过：真实 Hy-MT2 Q4_K_M + `flash` / `standard` 档的端到端测试；输出 PDF、双语 `fig_comments.txt`、`--no-temp` 清理和 `--resume` 均已验证。
 - `nci195.pdf` 实测（RTX 3050 / NVK Vulkan）：
   - `flash`：MinerU 2.1 s、翻译 46.6 s、Pandoc 2.0 s，总计约 51 s；8 页、473 KB。
   - `standard`：MinerU 15.7–16.5 s、翻译 45–46 s、Pandoc 2.1 s，总计约 63–65 s；7 页、470 KB；HTML 表格已翻译并转成 Markdown 表格。
 - `llama-bench`：Q4_K_M 在 Vulkan1 上 pp128 ≈ 1021 t/s、tg64 ≈ 78.7 t/s（Arch 包的 asserts 版本，非最终性能）。
-- 单元测试已覆盖配置优先级、文本覆盖率判定、图注映射、切块/保护、Markdown/HTML 表格翻译和 CLI dry-run。
+- 双语双栏已用 4 篇 PDF 跑通：9/16/27/23 页，图、表、参考文献和分页均能生成；单篇翻译耗时随页数增加。
+- 单元测试已覆盖配置优先级、文本覆盖率判定、图注映射、切块/保护、Markdown/HTML 表格翻译、双语 block 配对和 CLI dry-run。
 - 待完成：CUDA/parallel 真机验证。
 - 基准脚本：后续添加 `scripts/bench.py`，记录每阶段耗时、tokens/s、峰值内存、选中的 tier/device。
 
@@ -294,6 +334,7 @@ uv run ruff check src tests
 - [x] 制作 CLI 和 `config.yaml`
 - [x] 实现 Markdown/HTML 表格翻译
 - [x] 完成真实模型 + `standard` 档的本地测试和基准
+- [x] 实现双语双栏版式并完成多样本测试
 - [ ] 验证 CUDA/parallel（有硬件时）
 - [ ] 添加可选项（自定义版式、7B 等后续）
 

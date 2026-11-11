@@ -1,5 +1,15 @@
 # PTP Translates Papers — 用户手册
 
+> A:什么是ptp?
+
+> B: ptp translates papers!
+
+> A: 所以什么是ptp?
+
+> B: ptp translates papers!
+
+## 0. 这篇文章是干什么的?
+
 本文主要说明 **`config.yaml` 如何设置**，并给出安装、运行和常见问题。开发者细节见 [dev.md](dev.md)，完整项目说明见 [README.md](../README.md)。
 
 ## 1. 它能做什么
@@ -157,11 +167,18 @@ translation:
   glossary: null          # 术语表文件路径
 
 render:
+  # single | bilingual
+  layout: single
   # xelatex | lualatex | tectonic | typst
   engine: xelatex
   cjk_font: Noto Serif CJK SC
   # 预留：后续自定义版式模板
   template: null
+  # bilingual 专用：左栏比例、左右行距、图表最大高度
+  source_ratio: 0.48
+  source_line_spacing: 1.35
+  target_line_spacing: 1.15
+  figure_max_height: 0.45
 ```
 
 ## 5. 顶层配置说明
@@ -278,14 +295,48 @@ Vacuum vessel = 真空容器
 
 | 键 | 默认 | 说明 |
 |---|---|---|
+| `layout` | `single` | `single` 单栏中文；`bilingual` 左原文右译文 |
 | `engine` | `xelatex` | `xelatex` / `lualatex` / `tectonic` / `typst` |
-| `cjk_font` | `Noto Serif CJK SC` | Pandoc 的 `CJKmainfont` |
+| `cjk_font` | `Noto Serif CJK SC` | 中文字体 |
 | `template` | `null` | 预留的自定义版式模板路径 |
+| `source_ratio` | `0.48` | 双语左栏宽度比例 |
+| `source_line_spacing` | `1.35` | 原文行距 |
+| `target_line_spacing` | `1.15` | 译文行距 |
+| `figure_max_height` | `0.45` | 全宽图片最大高度（相对 `\textheight`） |
 
 - 当前实际验证的是 `xelatex`。
 - `tectonic`/`typst` 虽在 CLI 中可选，但未作为 v1 默认路径验证；Tectonic 首次运行会拉取约 2.62 GB bundle。
 - 中文字体建议保持 Noto CJK；系统已安装 `Noto Serif CJK SC` 和 `Noto Sans CJK SC`。
 - `template` 目前只透传给 Pandoc；真正的自定义版式是后续功能。
+
+### 双语双栏
+
+```yaml
+render:
+  layout: bilingual
+  engine: xelatex
+  source_ratio: 0.48
+  source_line_spacing: 1.35
+  target_line_spacing: 1.15
+  figure_max_height: 0.45
+```
+
+或：
+
+```bash
+uv run ptp -i inputs/nci195.pdf -o outputs --layout bilingual
+```
+
+行为：
+
+- 标题全宽双语；正文段落左原文、右译文，段落边界同步。
+- 图片、表格跨双栏且只出现一次；图注、表注保留原文。
+- 表格保留原文；HTML 表格会保留合并单元格。
+- 参考文献保留原文并全宽显示。
+- 输出 `outputs/<stem>_zh/<stem>_bilingual.pdf`，不覆盖单栏 PDF。
+- 需要安装 `texlive-latexextra`（提供 `paracol`），且当前只支持 `engine: xelatex`。
+- `fig_comments.txt` 仍生成，但双语模式 `ZH` 为 `[未翻译]`。
+- 左右栏不逐句对齐；长度差异会产生留白。
 
 ## 9. 常用配置方案
 
@@ -366,18 +417,20 @@ uv run ptp --download-model
 | `--gpu-backend` | `auto`/`cuda`/`vulkan`/`metal` |
 | `--gpu-index` | GPU 编号 |
 | `--threads` | CPU 线程数 |
-| `--task16` | 等价于 `--threads 16` |
 | `--parallel` | 文档级并行 |
 | `--no-temp` / `--keep-temp` | 是否保留中间文件 |
 | `--resume` | 复用已完成阶段 |
 | `--server-url` | 外部 llama-server |
 | `--model` | 覆盖 GGUF 路径 |
+| `--layout` | `single` 或 `bilingual` |
 | `--engine` | PDF 引擎 |
 | `--dry-run` | 只打印配置和任务 |
 | `--download-model` | 下载 Q4_K_M |
 
 ## 11. 输出与清理
 
+- 单栏输出：`outputs/<stem>_zh/<stem>_zh.pdf`。
+- 双语输出：`outputs/<stem>_zh/<stem>_bilingual.pdf`。
 - 默认保留 `temp/`；`--no-temp` 在成功结束后删除。
 - 失败时保留 `temp/`，方便排查和 `--resume`。
 - `--resume` 依赖 `state.json`；如果改了 tier/device，建议换输出目录或删除旧 `temp/`。
@@ -419,6 +472,15 @@ vulkaninfo --summary
 - 确认 `standard` 输出包含 `<table>`；程序会先翻译 HTML 单元格，再转 Markdown 表格。
 - 复杂 `rowspan`/`colspan` 会展开成重复表头/空单元格，版式不完美。
 
+### 某些正文段落仍是英文
+
+先区分预期保留和异常回退：
+
+- 作者/单位、ORCID、DOI、图注、表注、表格内容和参考文献在双语模式下本来就保留原文。
+- `OPEN`、`CrossMark` 等短标签也可能保留英文，这是正常的。
+- 正文段落若仍是英文，查看日志中的 `translation dropped protected placeholders` 和 `segment fallback`。程序会先重试一次，再按受保护片段切分翻译普通文本。
+- 最终仍失败时，`temp/state.json` 的 `translation_fallbacks.segment_untranslated` 会大于 0；保留 `temp/<stem>_en.md` 便于定位该段。
+
 ### Pandoc 报 `ctexhook.sty` 缺失
 
 ```bash
@@ -428,6 +490,14 @@ sudo pacman -S --needed texlive-langchinese
 ### 输出 PDF 版式不好看
 
 v1 是重排 PDF，不保留原版式。可先用 `--tier standard` 改善表格/公式；自定义版式是后续功能。
+
+### 双语模式报 `paracol.sty` 缺失
+
+```bash
+sudo pacman -S --needed texlive-latexextra
+```
+
+双语模式当前也只支持 `render.engine: xelatex`；不要改成 `tectonic`/`typst`。
 
 ## 13. 相关文档
 

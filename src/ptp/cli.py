@@ -74,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", metavar="FILE", help="translation GGUF path")
     parser.add_argument("--server-url", metavar="URL", help="use an already running llama-server")
     parser.add_argument(
+        "--layout",
+        choices=["single", "bilingual"],
+        help="single-column or bilingual two-column output",
+    )
+    parser.add_argument(
         "--engine",
         choices=["xelatex", "lualatex", "tectonic", "typst"],
         help="Pandoc PDF engine",
