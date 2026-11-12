@@ -87,12 +87,14 @@ def _preferred_gpu(devices: list[DeviceInfo]) -> DeviceInfo:
 
 def select_device(config: Config, *, binary: str | None = None) -> DeviceSelection:
     """Resolve the top-level device policy for translation and MinerU."""
-    devices = list_devices(binary or config.translation.llama_cli)
     requested = config.device
     backend = config.gpu_backend
 
     if requested == "cpu":
         return DeviceSelection(mode="cpu", reason="explicit_cpu", gpu_layers=0)
+
+    gpu_binary = binary or config.translation.llama_cli_gpu or config.translation.llama_cli
+    devices = list_devices(gpu_binary)
 
     if backend != "auto":
         filtered = [d for d in devices if d.backend.lower() == backend.lower()]

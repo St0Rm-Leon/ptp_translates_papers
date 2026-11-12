@@ -320,11 +320,17 @@ class TranslationService(AbstractContextManager["TranslationService"]):
                 f"translation model not found: {model}\n"
                 "Download it with `ptp --download-model` or set translation.model in config.yaml."
             )
-        executable = resolve_tool(self.translation.server_bin)
+        server_bin = self.translation.server_bin_for(self.selection.mode)
+        setting = "translation.server_bin"
+        if self.selection.mode == "cpu" and self.translation.server_bin_cpu:
+            setting = "translation.server_bin_cpu"
+        elif self.selection.mode == "gpu" and self.translation.server_bin_gpu:
+            setting = "translation.server_bin_gpu"
+        executable = resolve_tool(server_bin)
         if executable is None:
             raise TranslationError(
-                f"llama.cpp server not found: {self.translation.server_bin!r}; "
-                "install llama.cpp or set translation.server_bin to llama-server.exe"
+                f"llama.cpp server not found: {server_bin!r}; "
+                f"install llama.cpp or set {setting} to llama-server.exe"
             )
         port = self.translation.port or _free_port()
         self.base_url = f"http://{self.translation.host}:{port}"

@@ -116,7 +116,7 @@ winget install --id MiKTeX.MiKTeX -e
 #   server_bin: C:/tools/llama/llama-server.exe
 #   llama_cli: C:/tools/llama/llama-cli.exe
 
-uv sync
+uv sync --extra mineru
 uv run ptp --doctor
 ```
 
@@ -128,7 +128,7 @@ uv run ptp --doctor
 - Vulkan 包是可选的；没有 GPU 时可用 `--device cpu`。
 - Windows 需要同时提供 `llama-server.exe` 和 `llama-cli.exe`；设备探测使用后者。可在 `config.yaml` 用相对/绝对路径指定，不必加入 PATH。
 - Windows 默认没有 Noto CJK 字体。可安装 Noto，或用 `render.cjk_font_file` 指向随程序分发的 `.otf` 文件。
-- Windows 下先运行 `uv run ptp --doctor`，检查 Pandoc、XeLaTeX、llama.cpp、MinerU、字体、模型和输出目录。
+- Windows 下先运行 `uv run ptp --doctor`，检查 Pandoc、XeLaTeX、所选模式的 llama.cpp、MinerU、字体、模型和输出目录；没有字体文件时会做一次最小 XeLaTeX 字体编译。
 - 不需要配置 Python/TeX/llama.cpp 的离线便携包见 [Windows 便携版](windows.md)；构建脚本见 `scripts/windows/`。
 
 Python 环境和模型：
@@ -188,7 +188,7 @@ CLI 显式参数 > config.yaml > 内置默认值
 - 配置里未知的键会报错，避免拼写错误被忽略。
 - `version` 目前只支持 `1`。
 
-Windows 现在可以直接用 `uv run ptp` 或安装后的 `ptp` 运行，已处理 UTF-8 子进程、`Scripts/python.exe`、`.exe` 工具路径和启动器字体路径。便携双击版 `ptp.exe` 仍属于后续打包工作；届时启动器应把工作目录切到程序目录，以便读取同目录的 `config.yaml`。
+Windows 现在可以直接用 `uv run ptp` 或安装后的 `ptp` 运行，已处理 UTF-8 子进程、`Scripts/python.exe`、`.exe` 工具路径和启动器字体路径。Windows 便携版见 [windows.md](windows.md)；`ptp.exe` 会把工作目录切到包根目录，以便读取同目录的 `config.yaml`。
 
 ## 4. 完整配置示例
 
@@ -238,8 +238,14 @@ translation:
   model: models/Hy-MT2-1.8B-Q4_K_M.gguf
   # llama.cpp server 可执行文件；可写绝对路径或相对 config.yaml 的路径
   server_bin: llama-server
+  # 可选：CPU/GPU 专用 server；未设置则使用 server_bin
+  server_bin_cpu: null
+  server_bin_gpu: null
   # 设备探测用 llama-cli；Windows 便携包通常与 server 同目录
   llama_cli: llama-cli
+  # 可选：CPU/GPU 专用 CLI；未设置则使用 llama_cli
+  llama_cli_cpu: null
+  llama_cli_gpu: null
   # 使用已运行的 server 时填写，例如 http://127.0.0.1:8080
   server_url: null
   host: 127.0.0.1
@@ -298,6 +304,7 @@ render:
 - `cpu`：强制 CPU；适合没有 GPU 或调试。
 - `gpu`：必须有可用 GPU；找不到会报错，不会静默降级。
 - `--gpu-only` / `--cpu-only` 是 `--device gpu/cpu` 的别名。
+- Windows 便携包可同时配置 `server_bin`（GPU/Vulkan）和 `server_bin_cpu`（CPU）；`--device cpu` 会自动选择 CPU 版 llama.cpp。
 
 ### `gpu_backend` 和 `gpu_index`
 
@@ -348,7 +355,11 @@ render:
 |---|---|---|
 | `model` | `models/Hy-MT2-1.8B-Q4_K_M.gguf` | 本地 GGUF 路径 |
 | `server_bin` | `llama-server` | llama.cpp server 程序名或 `.exe` 路径 |
+| `server_bin_cpu` | `null` | CPU 模式专用 server；未设置则用 `server_bin` |
+| `server_bin_gpu` | `null` | GPU 模式专用 server；未设置则用 `server_bin` |
 | `llama_cli` | `llama-cli` | 设备探测用 llama.cpp CLI 名称或路径 |
+| `llama_cli_cpu` | `null` | CPU 模式专用 CLI；未设置则用 `llama_cli` |
+| `llama_cli_gpu` | `null` | GPU 模式专用 CLI；未设置则用 `llama_cli` |
 | `server_url` | `null` | 使用外部 server；设置后不本地启动 |
 | `host` | `127.0.0.1` | 本地 server 监听地址 |
 | `port` | `0` | `0` 表示自动找空闲端口 |
@@ -556,7 +567,7 @@ uv run ptp --download-model
 | `--layout` | `single` 或 `bilingual` |
 | `--engine` | PDF 引擎 |
 | `--dry-run` | 只打印配置和任务 |
-| `--doctor` | 检查 Pandoc、XeLaTeX、llama.cpp、MinerU、字体、模型和输出目录 |
+| `--doctor` | 检查工具、所选模式 llama.cpp、MinerU、字体、模型和输出目录 |
 | `--log-level` | 日志级别 |
 | `--download-model` | 下载 Q4_K_M |
 | 位置参数 `PDF...` | 与 `-i` 等价，支持把 PDF 拖到 `ptp.exe` 上 |
@@ -692,7 +703,7 @@ sudo pacman -S --needed texlive-latexextra
 - 双语模式保留 HTML 表格的 `rowspan`/`colspan`；单栏模式会展开成近似网格。
 - 长段落跨页时左右栏可能漂移；彻底同步需要句级对齐。
 - 复杂内联标记/公式块丢失占位符时会先分段重译，仍失败才保留原文并记录 warning。
-- Windows 源码运行已支持；便携双击 `ptp.exe` 和离线全内置包仍属于后续发行工作。
+- Windows 源码运行和便携版均已支持；便携版使用 `ptp.exe`，完整离线组件见 [windows.md](windows.md)。
 
 ## 14. 相关文档
 

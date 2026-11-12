@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
     [string]$ModelDir = "",
-    [string]$Revision = "",
     [switch]$Force,
     [switch]$DryRun
 )
@@ -65,7 +64,7 @@ if ($ModelDir) {
     if (-not (Test-Path -LiteralPath $python)) {
         Fail "PTP Python runtime not found: $python"
     }
-    $revision = if ($Revision) { $Revision } else { $hy.revision }
+    $revision = $hy.revision
     if (Test-Path -LiteralPath $target) {
         Remove-Item -LiteralPath $target -Force
     }

@@ -5,8 +5,8 @@
 发布组件：
 
 - `PTP-Windows-x64-core.7z`：PTP 运行时、工具、TinyTeX、字体、启动器、安装脚本，以及一个**空的** MinerU Python 运行时。
-- `PTP-Windows-x64-hy-model.7z`：Hy-MT2 翻译模型。
-- `PTP-Windows-x64-mineru.7z`：MinerU runtime + MinerU 模型。
+- `PTP-Windows-x64-hy-model.7z`：Hy-MT2 翻译模型、模型说明和许可证。
+- `PTP-Windows-x64-mineru.7z`：MinerU runtime + MinerU 模型、`data/mineru-home/config.yaml` 和许可证。
 
 三种用法：
 
@@ -120,7 +120,9 @@ mineru:
 translation:
   model: models/Hy-MT2-1.8B-Q4_K_M.gguf
   server_bin: tools/llama/vulkan/llama-server.exe
+  server_bin_cpu: tools/llama/cpu/llama-server.exe
   llama_cli: tools/llama/vulkan/llama-cli.exe
+  llama_cli_cpu: tools/llama/cpu/llama-cli.exe
 
 render:
   pandoc: tools/pandoc/pandoc.exe
@@ -129,14 +131,14 @@ render:
   cjk_font_bold_file: fonts/NotoSerifCJKsc-Bold.otf
 ```
 
-默认 `device: auto`：检测到 Vulkan GPU 时使用 GPU，否则 CPU。没有 GPU 时请用 `--device cpu`，不要使用 `--gpu-only`。
+默认 `device: auto`：检测到 Vulkan GPU 时使用 GPU，否则 CPU。没有 GPU 时请用 `--device cpu`，不要使用 `--gpu-only`；CPU 模式会自动使用 `server_bin_cpu` / `llama_cli_cpu`。
 
 ## 数据与日志
 
 - `inputs\`：建议放输入 PDF。
 - `outputs\`：输出 PDF 和 `temp/` 过程文件。
 - `data\logs\`：预留日志目录。
-- `data\mineru-home\`：MinerU 配置和缓存。
+- `data\mineru-home\`：MinerU 配置和缓存；完整组件包含一份指向 `mineru-models` 的配置。
 - `data\hf-cache\`：Hugging Face 缓存；脚本在线安装时使用。
 
 每个输出目录的 `temp\state.json` 记录阶段、耗时、`translation_fallbacks` 和错误信息。失败时保留 `temp/`。

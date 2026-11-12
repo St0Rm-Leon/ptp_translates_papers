@@ -8,7 +8,7 @@
 - Verified end-to-end on `inputs/nci195.pdf` with real Hy-MT2 Q4_K_M on NVIDIA NVK Vulkan:
   - `flash`: ~51 s (MinerU 2.1 s, translation 46.6 s, Pandoc 2.0 s).
   - `standard`: ~63–65 s (MinerU ~16 s, translation ~46 s, Pandoc ~2 s); HTML table translated and rendered.
-- Windows source-run compatibility is implemented: UTF-8 subprocess I/O, `Scripts/python.exe`, `.exe` tool paths, bundled font-file loading, loopback proxy bypass, positional (drag-and-drop) inputs, and `--doctor`. `uv run pytest -q` passes on Windows (61 passed, 1 skipped).
+- Windows source-run compatibility is implemented: UTF-8 subprocess I/O, `Scripts/python.exe`, `.exe` tool paths, bundled font-file loading, loopback proxy bypass, positional (drag-and-drop) inputs, and `--doctor`. `uv run pytest -q` passes on Windows (64 passed, 1 skipped).
 - Windows E2E is verified on Windows 11 x64 + Ryzen 7 9700X + RTX 5060: CPU `flash`/`basic`/`standard`, Vulkan `standard`, bilingual, and all four `inputs/` PDFs (4/6/9/11 pages). Vulkan standard: MinerU ~19.7 s, translation ~21.3 s, XeLaTeX ~2.6 s.
 - Windows portable package is built by `scripts/windows/build_portable.ps1`; it uses two relocatable CPython runtimes (`runtime/ptp`, `runtime/mineru`), a .NET Framework 4.8 `ptp.exe` launcher, Pandoc, TinyTeX, Noto OTF fonts, llama.cpp `b12283` Vulkan+CPU, and bundled models. User files live in root `inputs/` and `outputs/`; `data/` holds internal caches/logs.
 - Component releases: `build_components.ps1` splits a full build into `core` (with an empty MinerU Python runtime), `hy-model`, and `mineru` (runtime+models). `package_components.ps1` creates the three 7z assets. Lite/Model variants use `install-hy.cmd`, `install-mineru.cmd`, `install-all.cmd`; installers support online HF/PyPI, ModelScope, `-Wheelhouse`/`-ModelDir` offline input, SHA256 checks, and MinerU license acceptance.
@@ -63,6 +63,7 @@ The `mineru` package is an optional extra. For development use `uv sync --extra 
 - `-o` is an output root directory, not a PDF path. Single PDF: `outputs/<stem>_zh/<stem>_zh.pdf`; bilingual PDF: `outputs/<stem>_zh/<stem>_bilingual.pdf`.
 - MinerU is an optional dependency (`--extra mineru`) and can run from an isolated venv configured via `mineru.python`. It remains a separate program under the MinerU Open Source License; do not import it into PTP's main process. PTP invokes the independent `mineru-kit parse` CLI and reads its result ZIP.
 - `render.layout: single|bilingual`; bilingual currently requires `render.engine: xelatex` and `paracol` from `texlive-latexextra`.
+- On Windows portable bundles, `translation.server_bin_cpu` / `llama_cli_cpu` select the CPU llama.cpp when `selection.mode == "cpu"`; the base `server_bin` / `llama_cli` remain the GPU (Vulkan) path. `--doctor` runs `llama-cli --list-devices` and compiles a tiny font probe when no font file is configured.
 - In bilingual layout, title is bilingual; body text is paired per paragraph; figures/tables span both columns once; figure/table captions and references stay original; `fig_comments.txt` uses `ZH: [未翻译]`.
 - `--task16` means `--threads 16`; it is not 16 parallel tasks. Use `--parallel N` for document concurrency.
 - `tier: auto`: GPU → `standard`; CPU + high text coverage and no low-text pages → `basic`; CPU + scanned pages → `standard`. The heuristic does not detect table complexity.

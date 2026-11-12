@@ -16,6 +16,7 @@ pwsh -File scripts/windows/build_portable.ps1 `
 param(
     [string]$OutputDir,
     [string]$PythonDir,
+    [string]$PythonVersion = "3.13",
     [string]$PandocExe,
     [string]$LlamaTag = "b12283",
     [string]$TinyTexVersion = "v2026.11",
@@ -57,6 +58,8 @@ $OutputsDir = Join-Path $OutputDir "outputs"
 $DataDir = Join-Path $OutputDir "data"
 $MineruHome = Join-Path $DataDir "mineru-home"
 $BuildTemp = Join-Path $OutputDir "_build"
+$ComponentsPath = Join-Path $PSScriptRoot "install\components.example.json"
+$Components = Get-Content -LiteralPath $ComponentsPath -Raw | ConvertFrom-Json
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir, $ToolsDir, $LlamaDir, $PandocDir, $TexDir,
     $FontsDir, $ModelsDir, $MineruModelsDir, $InputsDir, $OutputsDir, $DataDir, $MineruHome,
@@ -76,17 +79,24 @@ function Get-PythonSource {
     }
 
     $managedRoot = (& uv python dir).Trim()
+    $pattern = "^cpython-" + [regex]::Escape($PythonVersion) + "\."
     $candidates = Get-ChildItem -LiteralPath $managedRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "python.exe") } |
-        Sort-Object Name -Descending
+        Where-Object {
+            $_.Name -match $pattern -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName "python.exe"))
+        } |
+        Sort-Object { [version]($_.Name -replace '^cpython-','' -replace '-.*$','') } -Descending
     if (-not $candidates) {
-        & uv python install 3.13
+        & uv python install $PythonVersion
         $candidates = Get-ChildItem -LiteralPath $managedRoot -Directory |
-            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "python.exe") } |
-            Sort-Object Name -Descending
+            Where-Object {
+                $_.Name -match $pattern -and
+                (Test-Path -LiteralPath (Join-Path $_.FullName "python.exe"))
+            } |
+            Sort-Object { [version]($_.Name -replace '^cpython-','' -replace '-.*$','') } -Descending
     }
     if (-not $candidates) {
-        throw "Could not find a uv-managed CPython 3.13 installation."
+        throw "Could not find a uv-managed CPython $PythonVersion installation."
     }
     return $candidates[0].FullName
 }
@@ -114,6 +124,22 @@ function Install-PipPackage([string]$Python, [string]$Spec) {
     & uv @pipArgs
     if ($LASTEXITCODE -ne 0) {
         throw "uv pip install failed for $Spec"
+    }
+}
+
+function Install-PipRequirements([string]$Python, [string]$Requirements) {
+    $pipArgs = @(
+        "pip", "install", "--python", $Python, "--link-mode=copy",
+        "--break-system-packages"
+    )
+    if ($Wheelhouse) {
+        $wheelPath = (Resolve-Path -LiteralPath $Wheelhouse).Path
+        $pipArgs += @("--no-index", "--find-links", $wheelPath)
+    }
+    $pipArgs += @("-r", $Requirements)
+    & uv @pipArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "uv pip install -r failed for $Requirements"
     }
 }
 
@@ -199,24 +225,34 @@ function Ensure-Fonts {
 
 function Ensure-TranslationModel {
     $model = Join-Path $ModelsDir "Hy-MT2-1.8B-Q4_K_M.gguf"
+    $revision = $Components.hy_model.revision
+    $expectedSha = $Components.hy_model.sha256
     if (-not (Test-Path -LiteralPath $model)) {
         if ($E2EAssets -and (Test-Path -LiteralPath (Join-Path $E2EAssets "models\Hy-MT2-1.8B-Q4_K_M.gguf"))) {
             Copy-Item -LiteralPath (Join-Path $E2EAssets "models\Hy-MT2-1.8B-Q4_K_M.gguf") -Destination $model
         } else {
             $env:HF_HUB_DISABLE_XET = "1"
-            & $script:PtPython -c "from huggingface_hub import hf_hub_download; import sys; hf_hub_download(repo_id='tencent/Hy-MT2-1.8B-GGUF', filename='Hy-MT2-1.8B-Q4_K_M.gguf', local_dir=sys.argv[1])" $ModelsDir
+            & $script:PtPython -c "from huggingface_hub import hf_hub_download; import sys; hf_hub_download(repo_id='tencent/Hy-MT2-1.8B-GGUF', filename='Hy-MT2-1.8B-Q4_K_M.gguf', revision=sys.argv[2], local_dir=sys.argv[1])" $ModelsDir $revision
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $model)) {
                 throw "Could not download Hy-MT2."
             }
         }
     }
 
+    $actualSha = (Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSha -ne $expectedSha.ToLowerInvariant()) {
+        throw "Hy-MT2 SHA256 mismatch. Expected $expectedSha, got $actualSha"
+    }
+
     Remove-Item -LiteralPath (Join-Path $ModelsDir ".cache") -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSES\Apache-2.0.txt") -Destination (Join-Path $ModelsDir "LICENSE-Apache-2.0.txt") -Force
     Set-Content -LiteralPath (Join-Path $ModelsDir "README.txt") -Encoding utf8 -Value @"
 Hy-MT2-1.8B Q4_K_M GGUF for PTP.
 
 Source: https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF
-License: Apache-2.0 (see THIRD_PARTY_NOTICES.md and the upstream model card).
+Revision: $revision
+SHA256: $actualSha
+License: Apache-2.0 (see LICENSE-Apache-2.0.txt and THIRD_PARTY_NOTICES.md).
 
 This model is not part of PTP's GPL license.
 "@
@@ -228,6 +264,18 @@ function Write-MineruConfig([string]$Source) {
 model:
   source: $Source
   base_dir: $base
+  small_backend: onnx
+  vlm:
+    engine: llama-cpp
+"@
+    Set-Content -LiteralPath (Join-Path $MineruHome "config.yaml") -Value $content -Encoding utf8
+}
+
+function Write-PortableMineruConfig {
+    $content = @"
+model:
+  source: local
+  base_dir: mineru-models
   small_backend: onnx
   vlm:
     engine: llama-cpp
@@ -259,12 +307,19 @@ function Ensure-MineruModels {
 
     Get-ChildItem -LiteralPath $MineruModelsDir -Recurse -Directory -Force -Filter ".cache" -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSES\Apache-2.0.txt") -Destination (Join-Path $MineruModelsDir "LICENSE-Apache-2.0.txt") -Force
+    $onnxRevision = $Components.mineru.models.'MinerU-4_models_onnx'
+    $vlmRevision = $Components.mineru.models.'MinerU2.5-Pro-2605-1.2B-GGUF'
     Set-Content -LiteralPath (Join-Path $MineruModelsDir "README.txt") -Encoding utf8 -Value @"
 MinerU models for PTP.
 
 Source:
   https://huggingface.co/opendatalab/MinerU-4_models_onnx
   https://huggingface.co/opendatalab/MinerU2.5-Pro-2605-1.2B-GGUF
+
+Expected model revisions (from components.example.json):
+  MinerU-4_models_onnx: $onnxRevision
+  MinerU2.5-Pro-2605-1.2B-GGUF: $vlmRevision
 
 These files are not part of PTP's GPL license.  Preserve the upstream model
 cards and licenses when redistributing this directory.
@@ -296,7 +351,9 @@ mineru:
 translation:
   model: models/Hy-MT2-1.8B-Q4_K_M.gguf
   server_bin: tools/llama/vulkan/llama-server.exe
+  server_bin_cpu: tools/llama/cpu/llama-server.exe
   llama_cli: tools/llama/vulkan/llama-cli.exe
+  llama_cli_cpu: tools/llama/cpu/llama-cli.exe
   server_url: null
   host: 127.0.0.1
   port: 0
@@ -374,15 +431,19 @@ function Copy-Notices {
 function Write-Manifest {
     $pandocVersion = (& (Join-Path $PandocDir "pandoc.exe") --version | Select-Object -First 1)
     $xelatexVersion = (& (Join-Path $TexDir "TinyTeX\bin\windows\xelatex.exe") --version | Select-Object -First 1)
+    $mineruVersion = (& (Join-Path $MineruPythonDir "Scripts\mineru-kit.exe") version | Select-Object -First 1)
     $manifest = [ordered]@{
         built_at = (Get-Date).ToString("o")
         platform = "windows-x64"
         python = (& $script:PtPython --version)
-        mineru = "4.1.x"
+        python_version = $PythonVersion
+        mineru = "$mineruVersion"
         llama_cpp = $LlamaTag
         pandoc = "$pandocVersion"
         tinytex = $TinyTexVersion
         xelatex = "$xelatexVersion"
+        hy_model_revision = $Components.hy_model.revision
+        mineru_model_revisions = $Components.mineru.models
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDir "build-manifest.json") -Encoding utf8
 }
@@ -412,7 +473,8 @@ if (-not $wheel) {
 Install-PipPackage $script:PtPython $wheel.FullName
 
 Write-Step "Installing MinerU 4.1 into its own runtime"
-Install-PipPackage $mineruPython "mineru>=4.1,<4.2"
+$mineruRequirements = Join-Path $PSScriptRoot "install\requirements-mineru.txt"
+Install-PipRequirements $mineruPython $mineruRequirements
 
 Write-Step "Bundling Pandoc"
 if (-not $PandocExe) {
@@ -446,6 +508,7 @@ Ensure-Fonts
 Write-Step "Bundling models"
 Ensure-TranslationModel
 Ensure-MineruModels
+Write-PortableMineruConfig
 
 Write-Step "Writing configuration, launcher and notices"
 Write-Config

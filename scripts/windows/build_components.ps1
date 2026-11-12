@@ -17,6 +17,7 @@ param(
     [string]$SourceDir,
     [string]$OutputDir,
     [string]$PythonDir,
+    [string]$PythonVersion = "3.13",
     [switch]$Force
 )
 
@@ -67,11 +68,24 @@ function Get-PythonSource {
         return (Resolve-Path -LiteralPath $PythonDir).Path
     }
     $managedRoot = (& uv python dir).Trim()
+    $pattern = "^cpython-" + [regex]::Escape($PythonVersion) + "\."
     $candidates = Get-ChildItem -LiteralPath $managedRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "python.exe") } |
-        Sort-Object Name -Descending
+        Where-Object {
+            $_.Name -match $pattern -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName "python.exe"))
+        } |
+        Sort-Object { [version]($_.Name -replace '^cpython-','' -replace '-.*$','') } -Descending
     if (-not $candidates) {
-        throw "No uv-managed Python found. Pass -PythonDir."
+        & uv python install $PythonVersion
+        $candidates = Get-ChildItem -LiteralPath $managedRoot -Directory |
+            Where-Object {
+                $_.Name -match $pattern -and
+                (Test-Path -LiteralPath (Join-Path $_.FullName "python.exe"))
+            } |
+            Sort-Object { [version]($_.Name -replace '^cpython-','' -replace '-.*$','') } -Descending
+    }
+    if (-not $candidates) {
+        throw "Could not find a uv-managed CPython $PythonVersion installation."
     }
     return $candidates[0].FullName
 }
@@ -142,6 +156,20 @@ if (Test-Path -LiteralPath (Join-Path $SourceDir "models\README.txt")) {
 Write-Step "Building mineru component"
 Copy-Directory (Join-Path $SourceDir "runtime\mineru") (Join-Path $MineruDir "runtime\mineru")
 Copy-Directory (Join-Path $SourceDir "mineru-models") (Join-Path $MineruDir "mineru-models")
+$mineruHomeSource = Join-Path $SourceDir "data\mineru-home\config.yaml"
+if (Test-Path -LiteralPath $mineruHomeSource) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $MineruDir "data\mineru-home") | Out-Null
+    $content = Get-Content -LiteralPath $mineruHomeSource -Raw
+    $content = [regex]::Replace($content, '(?m)^\s*base_dir:.*$', '  base_dir: mineru-models')
+    Set-Content -LiteralPath (Join-Path $MineruDir "data\mineru-home\config.yaml") -Value $content -Encoding utf8
+}
+
+Write-Step "Adding notices to model components"
+foreach ($dir in @($HyDir, $MineruDir)) {
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $dir
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") -Destination $dir
+    Copy-Directory (Join-Path $RepoRoot "LICENSES") (Join-Path $dir "LICENSES")
+}
 
 Write-Step "Components ready: $OutputDir"
 Get-ChildItem -LiteralPath $OutputDir | Select-Object Name

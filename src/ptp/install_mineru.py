@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from .compat import format_command, utf8_env
+from .compat import format_command, subprocess_text_options, utf8_env
 
 # MinerU 4.2 has not been validated with this pipeline; keep the tested 4.1 series.
 DEFAULT_MINERU_SPEC = "mineru>=4.1,<4.2"
@@ -89,6 +89,14 @@ def _print_license() -> None:
     print()
 
 
+def _absolute_without_symlink_resolution(path: Path) -> Path:
+    """Make a path absolute without following a venv's python symlink."""
+    path = path.expanduser()
+    if path.is_absolute():
+        return path
+    return (Path.cwd() / path).absolute()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _print_license()
@@ -106,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
 
     target = args.target.expanduser().resolve()
     python = venv_python(target)
-    base_python = Path(args.python).expanduser().resolve()
+    base_python = _absolute_without_symlink_resolution(Path(args.python))
     if not base_python.exists():
         print(f"Base Python not found: {base_python}", file=sys.stderr)
         return 1
@@ -136,6 +144,23 @@ def main(argv: list[str] | None = None) -> int:
         install.append("--no-index")
     install.append(args.mineru_spec)
     _run(install, dry_run=args.dry_run)
+
+    if not args.dry_run:
+        check = subprocess.run(
+            [str(python), "-c", "import mineru"],
+            check=False,
+            capture_output=True,
+            env=utf8_env(),
+            **subprocess_text_options(),
+        )
+        if check.returncode != 0:
+            detail = check.stderr.strip().splitlines()
+            print(
+                "MinerU was installed but cannot be imported"
+                + (f": {detail[-1]}" if detail else "."),
+                file=sys.stderr,
+            )
+            return 1
 
     snippet = yaml.safe_dump(
         {"mineru": {"python": str(python), "model_source": "auto"}},

@@ -210,7 +210,10 @@ def parse_pdf_subprocess(
         selection.mode,
         cli,
     )
-    proc = subprocess.run(cmd, check=False, env=env)
+    try:
+        proc = subprocess.run(cmd, check=False, env=env)
+    except OSError as exc:
+        raise RuntimeError(f"could not start MinerU CLI {cli}: {exc}") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"MinerU CLI process failed with exit code {proc.returncode}")
     if not zip_path.exists():

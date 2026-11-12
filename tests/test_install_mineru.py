@@ -1,7 +1,10 @@
+import os
 import sys
 from pathlib import Path
 
-from ptp.install_mineru import main, venv_python
+import pytest
+
+from ptp.install_mineru import _absolute_without_symlink_resolution, main, venv_python
 
 
 def test_venv_python_layout(tmp_path: Path):
@@ -58,3 +61,13 @@ def test_installer_dry_run_offline_wheelhouse(tmp_path: Path, capsys):
     assert "--no-index" in output
     assert "--find-links" in output
     assert "pip install --upgrade pip" not in output
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may require privileges")
+def test_installer_does_not_resolve_venv_python_symlink(tmp_path: Path):
+    base = tmp_path / "base-python"
+    base.write_text("", encoding="utf-8")
+    venv = tmp_path / "venv" / "bin" / "python"
+    venv.parent.mkdir(parents=True)
+    venv.symlink_to(base)
+    assert _absolute_without_symlink_resolution(venv) == venv

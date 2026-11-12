@@ -24,7 +24,7 @@ with their own licenses:
   `LICENSES/GPL-2.0-or-later.txt`.
 - TinyTeX / TeX Live: license files are in `tex/TinyTeX/LICENSE.TL` and
   `tex/TinyTeX/LICENSE.CTAN` (copied into `LICENSES/`).
-- llama.cpp: MIT, see `LICENSES/MIT.txt`.
+- llama.cpp: MIT, see `LICENSES/llama.cpp-MIT.txt`.
 - Noto Serif/Sans CJK: SIL Open Font License 1.1, see
   `LICENSES/OFL-1.1.txt`.
 - MinerU: see the section below; the `mineru` component/full version ships it
@@ -82,10 +82,11 @@ Notable components:
 - CPython / python-build-standalone (Windows portable bundle): PSF-2.0 for
   CPython; the standalone build tooling is MPL-2.0.  See
   `runtime/ptp/LICENSE.txt` in the portable bundle.
-- `pypdfium2` / PDFium: BSD-3-Clause and Apache-2.0
-- `beautifulsoup4`: MIT
-- `PyYAML`: MIT
-- `huggingface_hub`: Apache-2.0
+- `pypdfium2` / PDFium: BSD-3-Clause and Apache-2.0; see
+  `LICENSES/pypdfium2/` (in the wheel: `ptp/licenses/pypdfium2/`).
+- `beautifulsoup4`: MIT, see `LICENSES/BeautifulSoup-MIT.txt`.
+- `PyYAML`: MIT, see `LICENSES/PyYAML-MIT.txt`.
+- `huggingface_hub`: Apache-2.0, see `LICENSES/huggingface_hub-Apache-2.0.txt`.
 - `MinerU`: MinerU Open Source License (see above)
 - `mineru-llama-cpp`: MIT
 - `onnxruntime`: MIT

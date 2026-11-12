@@ -114,6 +114,24 @@ def test_portable_tool_and_font_paths_are_config_relative(tmp_path: Path):
     )
 
 
+def test_translation_cpu_gpu_binary_selection():
+    config = Config()
+    config.translation.server_bin = "default-server"
+    config.translation.server_bin_cpu = "cpu-server"
+    config.translation.server_bin_gpu = "gpu-server"
+    config.translation.llama_cli = "default-cli"
+    config.translation.llama_cli_cpu = "cpu-cli"
+    config.translation.llama_cli_gpu = "gpu-cli"
+    assert config.translation.server_bin_for("cpu") == "cpu-server"
+    assert config.translation.server_bin_for("gpu") == "gpu-server"
+    assert config.translation.llama_cli_for("cpu") == "cpu-cli"
+    assert config.translation.llama_cli_for("gpu") == "gpu-cli"
+    config.translation.server_bin_cpu = None
+    config.translation.server_bin_gpu = None
+    assert config.translation.server_bin_for("cpu") == "default-server"
+    assert config.translation.server_bin_for("gpu") == "default-server"
+
+
 def test_invalid_mineru_model_source_is_rejected(tmp_path: Path):
     path = tmp_path / "config.yaml"
     path.write_text(

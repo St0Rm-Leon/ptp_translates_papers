@@ -70,7 +70,7 @@ def resolve_inputs(config: Config, cli_inputs: list[str] | None) -> list[Path]:
                 candidates.append(path)
             else:
                 raise PipelineError(
-                    f"input not found: {path}; put PDFs in inputs\\ or pass -i FILE"
+                    f"input not found: {path}; put PDFs in inputs/ or pass -i FILE"
                 )
     else:
         if config.input.is_dir():
@@ -80,7 +80,7 @@ def resolve_inputs(config: Config, cli_inputs: list[str] | None) -> list[Path]:
         else:
             raise PipelineError(
                 f"input directory or file not found: {config.input}; "
-                "put PDFs in inputs\\ or pass -i FILE"
+                "put PDFs in inputs/ or pass -i FILE"
             )
 
     unique: list[Path] = []
@@ -100,7 +100,7 @@ def resolve_inputs(config: Config, cli_inputs: list[str] | None) -> list[Path]:
             else str(config.input)
         )
         raise PipelineError(
-            f"no PDF inputs found in {location}; put PDFs in inputs\\ or pass -i FILE"
+            f"no PDF inputs found in {location}; put PDFs in inputs/ or pass -i FILE"
         )
     return unique
 

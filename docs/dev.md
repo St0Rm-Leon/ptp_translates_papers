@@ -474,8 +474,9 @@ uv run ruff check src tests
 - `compat.configure_stdio()` 在 CLI 启动时把重定向的 stdout/stderr 设为 UTF-8。
 - 工具路径用 `compat.resolve_tool()`：裸名走 PATH，含目录的值走文件路径。配置里的相对路径按 `config.yaml` 所在目录解析。
 - `translation.server_bin`、`translation.llama_cli`、`render.pandoc`、`render.xelatex` 支持绝对/相对路径，Windows 便携包不需要把工具目录加入全局 PATH，避免 MinerU 的 DLL 冲突。
+- `translation.server_bin_cpu` / `server_bin_gpu` 和 `llama_cli_cpu` / `llama_cli_gpu` 支持 CPU/GPU 两套 llama.cpp；`TranslationService` 按 `selection.mode` 选择，便携包同时携带 Vulkan 和 CPU 版本。
 - `render.cjk_font_file`/`cjk_font_bold_file` 让 XeLaTeX 直接按文件加载字体，不依赖 Windows 字体安装。
-- `--doctor` 检查 Pandoc、XeLaTeX、llama.cpp、MinerU、字体、模型和输出目录。
+- `--doctor` 检查 Pandoc、XeLaTeX、所选模式的 llama.cpp、MinerU、字体（无字体文件时做一次最小 XeLaTeX 编译）、模型和输出目录；同时运行 `llama-cli --list-devices` 验证运行时 DLL。
 - 单元测试必须跨平台：不要写 `#!/bin/sh` 或依赖 `/tmp`；venv Python 用 `Path.stem == "python"` 同时匹配 `python`/`python.exe`。
 - `ptp` 支持位置参数输入，便于把 PDF 拖到 `ptp.exe` 上；`-i` 仍然是主用法。
 

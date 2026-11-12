@@ -2078,7 +2078,7 @@ wheels = [
 
 [[package]]
 name = "ptp-translates-papers"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -2102,7 +2102,7 @@ dev = [
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "huggingface-hub", specifier = ">=0.30" },
-    { name = "mineru", marker = "extra == 'mineru'", specifier = ">=4.1,<5" },
+    { name = "mineru", marker = "extra == 'mineru'", specifier = ">=4.1,<4.2" },
     { name = "pypdfium2", specifier = ">=5.13" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]

@@ -6,6 +6,8 @@ import argparse
 import logging
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from . import __version__
 from .compat import (
@@ -147,6 +149,41 @@ def _print_config(config: Config) -> None:
     print(f"parallel:   {config.parallel}")
 
 
+def _check_cjk_font(font: str, engine_path: str) -> tuple[bool, str]:
+    """Compile a minimal XeLaTeX document to verify the font is usable."""
+    with tempfile.TemporaryDirectory(prefix="ptp-doctor-") as tmp:
+        tex = Path(tmp) / "font-check.tex"
+        tex.write_text(
+            "\\documentclass{article}\n"
+            "\\usepackage{fontspec}\n"
+            "\\usepackage{xeCJK}\n"
+            f"\\setCJKmainfont{{{font}}}\n"
+            "\\begin{document}ok\\end{document}\n",
+            encoding="utf-8",
+        )
+        try:
+            proc = subprocess.run(
+                [
+                    engine_path,
+                    "-interaction=nonstopmode",
+                    "-halt-on-error",
+                    f"-output-directory={tmp}",
+                    str(tex),
+                ],
+                check=False,
+                capture_output=True,
+                timeout=60,
+                env=utf8_env(),
+                **subprocess_text_options(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"{font}; {exc}"
+        if proc.returncode == 0:
+            return True, font
+        tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-8:])
+        return False, f"{font}; {tail}"
+
+
 def _doctor(config: Config) -> int:
     """Check the external tools a Windows/source install depends on."""
     failures = 0
@@ -165,14 +202,49 @@ def _doctor(config: Config) -> int:
     engine_path = resolve_tool(engine_bin or engine)
     report(engine, engine_path is not None, engine_path or "not found; install TeX Live/MiKTeX")
 
-    server = resolve_tool(config.translation.server_bin)
-    report(
-        "llama-server",
-        server is not None,
-        server or "not found; set translation.server_bin",
-    )
-    cli = resolve_tool(config.translation.llama_cli)
-    report("llama-cli", cli is not None, cli or "not found; set translation.llama_cli")
+    try:
+        selection = select_device(config)
+    except DeviceError as exc:
+        report("llama.cpp device", False, str(exc))
+        selection = None
+
+    if selection is not None:
+        server_bin = config.translation.server_bin_for(selection.mode)
+        cli_bin = config.translation.llama_cli_for(selection.mode)
+        if config.translation.server_url:
+            report("llama-server", True, f"external server: {config.translation.server_url}")
+        else:
+            server = resolve_tool(server_bin)
+            report(
+                "llama-server",
+                server is not None,
+                server or f"not found; set translation.server_bin or server_bin_{selection.mode}",
+            )
+        cli = resolve_tool(cli_bin)
+        report(
+            "llama-cli",
+            cli is not None,
+            cli or f"not found; set translation.llama_cli or llama_cli_{selection.mode}",
+        )
+        if cli is not None:
+            try:
+                proc = subprocess.run(
+                    [cli, "--list-devices"],
+                    check=False,
+                    capture_output=True,
+                    timeout=30,
+                    env=utf8_env(),
+                    **subprocess_text_options(),
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                report("llama-cli runtime", False, str(exc))
+            else:
+                tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-5:])
+                report(
+                    "llama-cli runtime",
+                    proc.returncode == 0,
+                    "list-devices OK" if proc.returncode == 0 else (tail or cli),
+                )
 
     report(
         "translation model",
@@ -200,20 +272,25 @@ def _doctor(config: Config) -> int:
             mineru_cli is not None,
             str(mineru_cli) if mineru_cli else "not found; run install-mineru.cmd",
         )
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         report("MinerU", False, str(exc))
 
     if config.render.cjk_font_file is not None:
-        report(
-            "CJK font file",
-            config.render.cjk_font_file.exists(),
-            str(config.render.cjk_font_file),
-        )
+        font = config.render.cjk_font_file
+        bold = config.render.cjk_font_bold_file
+        ok = font.exists() and (bold is None or bold.exists())
+        detail = str(font)
+        if bold is not None:
+            detail += f"; bold={bold}"
+        report("CJK font file", ok, detail)
+    elif engine in {"xelatex", "lualatex"} and engine_path is not None:
+        ok, detail = _check_cjk_font(config.render.cjk_font, engine_path)
+        report("CJK font family", ok, detail)
     else:
         report(
             "CJK font family",
             True,
-            f"{config.render.cjk_font} (install the font on Windows or use cjk_font_file)",
+            f"{config.render.cjk_font} (not checked for {engine})",
         )
 
     try:
@@ -268,7 +345,15 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print("已清理缓存的过程文件。")
         return 1 if failures else 0
-    except (ConfigError, DeviceError, PipelineError, TranslationError, RenderError) as exc:
+    except (
+        ConfigError,
+        DeviceError,
+        PipelineError,
+        TranslationError,
+        RenderError,
+        RuntimeError,
+        OSError,
+    ) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 

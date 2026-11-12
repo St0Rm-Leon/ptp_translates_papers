@@ -1,6 +1,6 @@
 [project]
 name = "ptp-translates-papers"
-version = "0.1.1"
+version = "0.1.2"
 description = "PTP Translates Papers: a local PDF paper translation pipeline"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mineru = ["mineru>=4.1,<5"]
+mineru = ["mineru>=4.1,<4.2"]
 
 [project.scripts]
 ptp = "ptp.cli:main"
@@ -35,6 +35,7 @@ packages = ["src/ptp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "THIRD_PARTY_NOTICES.md" = "ptp/THIRD_PARTY_NOTICES.md"
+"LICENSES/pypdfium2" = "ptp/licenses/pypdfium2"
 
 [tool.hatch.build.targets.sdist]
 exclude = ["inputs/", "outputs/", "models/", "dist/"]

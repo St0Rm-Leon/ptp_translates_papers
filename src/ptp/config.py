@@ -37,7 +37,11 @@ class MineruConfig:
 class TranslationConfig:
     model: Path = Path("models/Hy-MT2-1.8B-Q4_K_M.gguf")
     server_bin: str = "llama-server"
+    server_bin_cpu: str | None = None
+    server_bin_gpu: str | None = None
     llama_cli: str = "llama-cli"
+    llama_cli_cpu: str | None = None
+    llama_cli_gpu: str | None = None
     server_url: str | None = None
     host: str = "127.0.0.1"
     port: int = 0
@@ -53,6 +57,22 @@ class TranslationConfig:
     context_size: int = 4096
     glossary: Path | None = None
     extra_args: list[str] = field(default_factory=list)
+
+    def server_bin_for(self, mode: str) -> str:
+        """Return the llama.cpp server for the selected device mode."""
+        if mode == "cpu" and self.server_bin_cpu:
+            return self.server_bin_cpu
+        if mode == "gpu" and self.server_bin_gpu:
+            return self.server_bin_gpu
+        return self.server_bin
+
+    def llama_cli_for(self, mode: str) -> str:
+        """Return the llama.cpp CLI used for device probing."""
+        if mode == "cpu" and self.llama_cli_cpu:
+            return self.llama_cli_cpu
+        if mode == "gpu" and self.llama_cli_gpu:
+            return self.llama_cli_gpu
+        return self.llama_cli
 
 
 @dataclass
@@ -257,7 +277,11 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
         {
             "model",
             "server_bin",
+            "server_bin_cpu",
+            "server_bin_gpu",
             "llama_cli",
+            "llama_cli_cpu",
+            "llama_cli_gpu",
             "server_url",
             "host",
             "port",
@@ -318,10 +342,22 @@ def _parse_config(data: dict[str, Any], base: Path, config_path: Path | None) ->
             raw_translation.get("server_bin", "llama-server"), base, "translation.server_bin"
         )
         or "llama-server",
+        server_bin_cpu=_tool_value(
+            raw_translation.get("server_bin_cpu"), base, "translation.server_bin_cpu"
+        ),
+        server_bin_gpu=_tool_value(
+            raw_translation.get("server_bin_gpu"), base, "translation.server_bin_gpu"
+        ),
         llama_cli=_tool_value(
             raw_translation.get("llama_cli", "llama-cli"), base, "translation.llama_cli"
         )
         or "llama-cli",
+        llama_cli_cpu=_tool_value(
+            raw_translation.get("llama_cli_cpu"), base, "translation.llama_cli_cpu"
+        ),
+        llama_cli_gpu=_tool_value(
+            raw_translation.get("llama_cli_gpu"), base, "translation.llama_cli_gpu"
+        ),
         server_url=raw_translation.get("server_url") or None,
         host=str(raw_translation.get("host", "127.0.0.1")),
         port=int(raw_translation.get("port", 0)),

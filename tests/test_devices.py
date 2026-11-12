@@ -3,7 +3,7 @@ from pathlib import Path
 
 from ptp import devices
 from ptp.config import Config
-from ptp.devices import DeviceSelection, list_devices, mineru_env_vars
+from ptp.devices import DeviceSelection, list_devices, mineru_env_vars, select_device
 
 
 class _FakeCompleted:
@@ -60,3 +60,16 @@ def test_mineru_env_vars_use_vulkan_for_gpu(tmp_path: Path):
     assert env["MINERU_MODEL_ONNX_DEVICE"] == "gpu"
     assert env["MINERU_LLAMA_CPP_BACKEND"] == "vulkan"
     assert env["GGML_VK_VISIBLE_DEVICES"] == "1"
+
+
+def test_explicit_cpu_does_not_probe_gpu_cli(monkeypatch):
+    config = Config()
+    config.device = "cpu"
+
+    def fail(*args, **kwargs):
+        raise AssertionError("list_devices must not be called for --device cpu")
+
+    monkeypatch.setattr(devices, "list_devices", fail)
+    selection = select_device(config)
+    assert selection.mode == "cpu"
+    assert selection.reason == "explicit_cpu"

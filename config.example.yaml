@@ -24,8 +24,12 @@ mineru:
 
 translation:
   model: models/Hy-MT2-1.8B-Q4_K_M.gguf
-  server_bin: llama-server  # bare name on PATH or path to llama-server.exe
-  llama_cli: llama-cli      # bare name on PATH or path to llama-cli.exe
+  server_bin: llama-server  # default/GPU server: bare name on PATH or path to llama-server.exe
+  server_bin_cpu: null      # optional CPU-specific server (portable bundle)
+  server_bin_gpu: null      # optional GPU-specific server
+  llama_cli: llama-cli      # default/GPU CLI: bare name on PATH or path to llama-cli.exe
+  llama_cli_cpu: null       # optional CPU-specific CLI (portable bundle)
+  llama_cli_gpu: null       # optional GPU-specific CLI
   server_url: null     # set to use an already running llama-server
   host: 127.0.0.1
   port: 0              # 0 = choose a free port

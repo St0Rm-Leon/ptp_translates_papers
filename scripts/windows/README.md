@@ -35,6 +35,7 @@ Useful options:
 
 - `-OutputDir <dir>`: output directory (default `build\windows-portable`).
 - `-PythonDir <dir>`: use a specific relocatable CPython 3.13 directory.
+- `-PythonVersion 3.13`: uv-managed CPython version to use when `-PythonDir` is omitted.
 - `-PandocExe <path>`: use a specific `pandoc.exe`.
 - `-LlamaTag b12283`: llama.cpp release tag.
 - `-TinyTexVersion v2026.11`: TinyTeX release tag.
@@ -52,7 +53,8 @@ components:
 
 ```powershell
 pwsh -File scripts/windows/build_components.ps1 `
-  -SourceDir build\windows-portable
+  -SourceDir build\windows-portable `
+  -PythonVersion 3.13
 
 pwsh -File scripts/windows/package_components.ps1 -CompressionLevel 5
 ```
@@ -61,8 +63,9 @@ This writes to `dist/`:
 
 - `PTP-Windows-x64-core.7z`: PTP runtime, Pandoc, TinyTeX, llama.cpp, fonts,
   launcher, installers, and an **empty** `runtime/mineru` Python runtime.
-- `PTP-Windows-x64-hy-model.7z`: Hy-MT2 GGUF and model readme.
-- `PTP-Windows-x64-mineru.7z`: MinerU runtime packages and MinerU models.
+- `PTP-Windows-x64-hy-model.7z`: Hy-MT2 GGUF, model readme, and notices.
+- `PTP-Windows-x64-mineru.7z`: MinerU runtime packages, MinerU models,
+  `data/mineru-home/config.yaml`, and notices.
 - `SHA256SUMS.txt`.
 
 Users choose one of:
@@ -92,7 +95,7 @@ wrappers into the core root, and writes `components.json`.
 ## What the script does
 
 1. Copies a uv-managed relocatable CPython 3.13 into `runtime\ptp` and
-   `runtime\mineru`.
+   `runtime\mineru` (override with `-PythonDir` / `-PythonVersion`).
 2. Builds/installs the PTP wheel into `runtime\ptp`.
 3. Installs MinerU 4.1 into `runtime\mineru`.
 4. Copies Pandoc into `tools\pandoc`.
@@ -100,7 +103,9 @@ wrappers into the core root, and writes `components.json`.
 6. Downloads/extracts TinyTeX 1 into `tex\TinyTeX`, then installs required
    LaTeX packages with `tlmgr`.
 7. Copies Noto Serif CJK SC Regular/Bold into `fonts`.
-8. Copies/downloads Hy-MT2 and MinerU models.
+8. Downloads/copies Hy-MT2 at the revision pinned in
+   `install/components.example.json`, verifies its SHA256, and installs the
+   pinned MinerU version; model revisions are recorded in the build manifest.
 9. Writes portable `config.yaml` and the MinerU runtime config.
 10. Compiles the thin C# launcher `ptp.exe`.
 11. Runs `ptp.exe --doctor`.
