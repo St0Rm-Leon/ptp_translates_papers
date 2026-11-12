@@ -1,6 +1,6 @@
 [project]
 name = "ptp-translates-papers"
-version = "0.1.0"
+version = "0.1.1"
 description = "PTP Translates Papers: a local PDF paper translation pipeline"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

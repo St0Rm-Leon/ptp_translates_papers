@@ -305,6 +305,7 @@ def _markdown_to_latex(block: str, pandoc: str | None = None) -> str:
             "-t",
             "latex",
             "--wrap=none",
+            "--syntax-highlighting=none",
         ],
         input=block,
         capture_output=True,
@@ -352,7 +353,15 @@ def _html_table_to_latex(table_html: str, pandoc: str | None = None) -> str:
     if executable is None:
         raise RuntimeError("pandoc is required for bilingual layout")
     proc = subprocess.run(
-        [executable, "-f", "html", "-t", "latex", "--wrap=none"],
+        [
+            executable,
+            "-f",
+            "html",
+            "-t",
+            "latex",
+            "--wrap=none",
+            "--syntax-highlighting=none",
+        ],
         input=table_html,
         capture_output=True,
         check=False,

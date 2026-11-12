@@ -2,6 +2,7 @@ from pathlib import Path
 
 from ptp.bilingual import (
     BilingualUnit,
+    _markdown_to_latex,
     bilingual_preamble,
     build_bilingual_tex,
     build_units,
@@ -135,6 +136,13 @@ def test_bilingual_preamble_can_load_bundled_font_file(tmp_path: Path):
     assert "\\setCJKmainfont[Path={" in tex
     assert regular.name in tex
     assert fonts.as_posix() in tex
+
+
+def test_code_block_uses_verbatim_without_pandoc_shading():
+    tex = _markdown_to_latex("```txt\nline one\nline two\n```")
+    assert r"\begin{verbatim}" in tex
+    assert "Shaded" not in tex
+    assert "Highlighting" not in tex
 
 
 def test_sup_and_sub_tags_become_latex_commands():
